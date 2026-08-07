@@ -283,7 +283,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
         input[type="text"], input[type="number"] { width: 100%; background: #090d16; border: 1px solid var(--border); color: #fff; padding: 10px; border-radius: 6px; box-sizing: border-box; margin-bottom: 10px; font-size: 13px; }
         
         .ip-row { display: flex; justify-content: space-between; align-items: center; background: #090d16; border: 1px solid var(--border); padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; font-size: 13px; }
-        
         .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
         .stat-card { background: #090d16; border: 1px solid var(--border); padding: 15px; border-radius: 10px; text-align: center; }
         .stat-card .val { font-size: 18px; font-weight: bold; color: var(--primary); margin-top: 5px; }
@@ -298,8 +297,8 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 <span class="badge-aktiv">● Aktiv</span>
             </div>
             <div class="sub-header">
-                <span id="session-timeout">Session-Timeout in 10:00 min</span>
-                <span id="uptime-display">Uptime: 0m 0s</span>
+                <span>Session-Timeout in 10:00 min</span>
+                <span>Uptime aktiv</span>
             </div>
 
             <div class="tabs">
@@ -363,7 +362,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- TAB 5: SICHERHEIT -->
+            <!-- TAB 5: SICHERHEIT & DDOS-SCHUTZ -->
             <div class="tab-content __CONTENT_SEC_ACTIVE__">
                 <form action="/admin/update-settings" method="POST">
                     <div style="font-size: 13px; margin-bottom: 5px;">Wartungsmodus (Lehnt normale Besucher ab):</div>
@@ -372,10 +371,10 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     <div style="font-size: 13px; margin-bottom: 5px;">Automatischer Bot-Schutz (IP Ratenbegrenzung & Auto-Ban):</div>
                     <button type="submit" name="toggle_autoban" value="1" class="btn __AUTOBAN_BTN_CLASS__" style="width: 100%; margin-bottom: 15px;">Auto-Bot-Schutz: __AUTOBAN_TEXT__</button>
 
-                    <div style="font-size: 13px; margin-bottom: 5px;">Max. Anfragen pro IP innerhalb von 1 Sekunde:</div>
+                    <div style="font-size: 13px; margin-bottom: 5px;">Max. Anfragen pro IP innerhalb von 1 Sekunde (IP-Drossler):</div>
                     <input type="number" name="max_ip_req" value="__MAX_IP_REQ__" required>
 
-                    <div style="font-size: 13px; margin-bottom: 5px;">Throttling-Verzögerung (Sekunden):</div>
+                    <div style="font-size: 13px; margin-bottom: 5px;">Throttling-Verzögerung bei Last (Sekunden):</div>
                     <input type="number" step="0.1" name="throttle_delay" value="__THROTTLE_DELAY__" required>
 
                     <div style="font-size: 13px; margin-bottom: 5px;">Globales Website-Limit (RPS Schwelle für 503):</div>
@@ -443,7 +442,6 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
                 
                 active_tab = query_params.get("tab", ["logs"])[0]
                 
-                # Tab Aktive Klassen setzen
                 tabs = ["logs", "geo", "banned", "whitelist", "security", "status"]
                 tab_replacements = {}
                 for t in tabs:
@@ -551,6 +549,7 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             ip_request_counts[client_ip] = [t for t in ip_request_counts[client_ip] if t > now - 1.0]
             ip_request_counts[client_ip].append(now)
             
+            # DDoS Schutz / IP-Drossler (Standard: Max 2 Anfragen pro Sekunde)
             if len(ip_request_counts[client_ip]) > MAX_REQUESTS_PER_IP:
                 if AUTO_BAN_ENABLED:
                     BANNED_IPS.add(client_ip)

@@ -19,7 +19,6 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-# Live-Graph Historie (letzte 30 Sekunden)
 TRAFFIC_HISTORY = deque([0] * 30, maxlen=30)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_COUNT = 0
@@ -27,10 +26,14 @@ CURRENT_SEC_COUNT = 0
 SETTINGS_FILE = "settings.json"
 ADMIN_PASSWORD = "Luca123"
 
+# Speichert temporäre Sperren als Dictionary: {ip: ablauf_timestamp}
+TEMPORARY_BANS = {}
+
 default_settings = {
     "maintenance": False,
     "autoban": True,
-    "max_ip_req": 15,
+    "max_ip_req": 2,          # Standardmäßig z.B. max 2 Anfragen pro Sekunde
+    "ban_duration": 10,       # Standardmäßig 10 Sekunden Sperre
     "server_limit": 150,
     "throttle_delay": 2.0,
     "banned_ips": [],
@@ -56,6 +59,7 @@ def save_settings():
             "maintenance": MAINTENANCE_MODE,
             "autoban": AUTO_BAN_ENABLED,
             "max_ip_req": MAX_REQUESTS_PER_IP,
+            "ban_duration": BAN_DURATION,
             "server_limit": SERVER_LIMIT,
             "throttle_delay": THROTTLE_DELAY,
             "banned_ips": list(BANNED_IPS),
@@ -70,6 +74,7 @@ config_data = load_settings()
 MAINTENANCE_MODE = config_data["maintenance"]
 AUTO_BAN_ENABLED = config_data["autoban"]
 MAX_REQUESTS_PER_IP = config_data["max_ip_req"]
+BAN_DURATION = config_data["ban_duration"]
 SERVER_LIMIT = config_data["server_limit"]
 THROTTLE_DELAY = config_data["throttle_delay"]
 BANNED_IPS = set(config_data["banned_ips"])
@@ -158,7 +163,6 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        /* Live Graph mit Achsenbeschriftung an der Seite */
         .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 120px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
         .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 4px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
@@ -180,7 +184,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Live aktiv</span></div>
+            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden mit Stresstest-L7</span></div>
             <div class="chart-wrapper">
                 <div class="chart-axis" id="chart-axis">
                     <span id="axis-max">10</span>
@@ -196,23 +200,22 @@ PUBLIC_HTML = """<!DOCTYPE html>
     <script>
         function measurePing() {
             const start = performance.now();
-            fetch('/api/stats', { method: 'HEAD', cache: 'no-store' })
+            fetch('https://stresstest-l7.onrender.com/api/stats', { method: 'HEAD', mode: 'cors', cache: 'no-store' })
                 .then(() => {
                     const duration = Math.round(performance.now() - start);
                     document.getElementById('server-ping').innerText = duration + ' ms';
                 })
                 .catch(() => {
-                    document.getElementById('server-ping').innerText = 'Fehler';
+                    document.getElementById('server-ping').innerText = 'Down';
                 });
         }
-        setInterval(measurePing, 500);
+        setInterval(measurePing, 1000);
 
         function updateStats() {
-            // Versucht primär die lokalen Echtzeit-Daten abzurufen
-            fetch('/api/stats')
+            fetch('https://stresstest-l7.onrender.com/api/stats', { mode: 'cors' })
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('api-status').innerText = '● Live aktiv';
+                    document.getElementById('api-status').innerText = '● Stresstest-L7 Live';
                     document.getElementById('api-status').style.color = 'var(--success)';
                     
                     document.getElementById('total-req').innerText = data.total;
@@ -235,8 +238,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     chart.innerHTML = barsHtml;
                 })
                 .catch(err => {
-                    // Fallback, falls der Server nicht erreichbar ist
-                    document.getElementById('api-status').innerText = '○ Verbindung getrennt';
+                    document.getElementById('api-status').innerText = '○ Stresstest-L7 offline (Fallback aktiv)';
                     document.getElementById('api-status').style.color = '#ef4444';
                 });
         }
@@ -431,9 +433,14 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                             <input type="text" name="ip" placeholder="z.B. 192.168.1.50" required style="margin-bottom: 8px;">
                             <button type="submit" class="btn btn-danger" style="width: 100%; padding: 7px;">Sperren</button>
                         </form>
-                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Gesperrte IPs:</div>
+                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Permanent gesperrt:</div>
                         <div style="max-height: 110px; overflow-y: auto;">
                             __BANNED_LIST__
+                        </div>
+                        
+                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Temporär gesperrt (Auto-Ban):</div>
+                        <div style="max-height: 110px; overflow-y: auto;">
+                            __TEMP_BANNED_LIST__
                         </div>
                     </div>
 
@@ -461,8 +468,9 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                         </div>
 
                         <div style="margin-bottom: 14px;">
-                            <label style="font-size: 11px; color: var(--text-muted); display:block; margin-bottom: 6px; font-weight: bold;">DROSSELUNG & LIMITS (PRO IP)</label>
+                            <label style="font-size: 11px; color: var(--text-muted); display:block; margin-bottom: 6px; font-weight: bold;">SCHWELLENWERTE & DAUER</label>
                             <input type="number" name="max_ip_req" value="__MAX_IP_REQ__" placeholder="Max Anfragen pro Sek." required style="margin-bottom:8px;">
+                            <input type="number" name="ban_duration" value="__BAN_DURATION__" placeholder="Auto-Ban Dauer in Sek. (z.B. 10)" required style="margin-bottom:8px;">
                             <input type="number" step="0.1" name="throttle_delay" value="__THROTTLE_DELAY__" placeholder="Verzögerung in Sek." required style="margin-bottom:0;">
                         </div>
 
@@ -505,20 +513,28 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         return self.client_address[0]
 
     def do_GET(self):
-        global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, THROTTLE_DELAY, SERVER_LIMIT
+        global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT, TEMPORARY_BANS
         
         client_ip = self.get_client_ip()
         now = time.time()
         
+        # Abgelaufene temporäre Bans automatisch bereinigen
+        expired_ips = [ip for ip, exp in TEMPORARY_BANS.items() if now > exp]
+        for ip in expired_ips:
+            del TEMPORARY_BANS[ip]
+
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
         query_params = urllib.parse.parse_qs(parsed_path.query)
 
-        if client_ip not in WHITELISTED_IPS and client_ip in BANNED_IPS:
-            status_code_stats[403] += 1
-            self.send_error(403, "Access Denied - Permanent Banned")
-            return
+        # Prüfung ob permanent oder temporär gebannt
+        if client_ip not in WHITELISTED_IPS:
+            if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
+                status_code_stats[403] += 1
+                self.send_error(403, "Access Denied - Banned / Rate Limited")
+                return
 
+        # Rate Limiting Check (z.B. max X Anfragen pro Sekunde)
         if client_ip not in WHITELISTED_IPS:
             timestamps = ip_request_counts[client_ip]
             timestamps[:] = [t for t in timestamps if t > now - 1.0]
@@ -526,10 +542,10 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             
             if len(timestamps) > MAX_REQUESTS_PER_IP:
                 if AUTO_BAN_ENABLED:
-                    BANNED_IPS.add(client_ip)
-                    save_settings()
+                    # Temporären Ban für die konfigurierte Dauer setzen
+                    TEMPORARY_BANS[client_ip] = now + BAN_DURATION
                 status_code_stats[403] += 1
-                self.send_error(403, "Rate Limit Exceeded - You are now Banned")
+                self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
                 return
 
         TOTAL_REQUESTS_COUNT += 1
@@ -631,7 +647,14 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 for ip in BANNED_IPS:
                     banned_html += f'<div class="ip-row"><span>{ip}</span><a href="/admin/unban-ip?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
                 if not banned_html:
-                    banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine gesperrten IPs.</div>'
+                    banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine permanenten Bans.</div>'
+
+                temp_banned_html = ""
+                for ip, exp_time in list(TEMPORARY_BANS.items()):
+                    remaining = max(0, int(exp_time - time.time()))
+                    temp_banned_html += f'<div class="ip-row"><span>{ip} <small style="color:var(--warning);">({remaining}s übrig)</small></span><a href="/admin/unban-temp?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
+                if not temp_banned_html:
+                    temp_banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine aktiven temporären Bans.</div>'
 
                 whitelist_html = ""
                 for ip in WHITELISTED_IPS:
@@ -657,12 +680,14 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 page = page.replace("__LOGS_TABLE__", logs_html)\
                            .replace("__GEO_TABLE__", geo_html)\
                            .replace("__BANNED_LIST__", banned_html)\
+                           .replace("__TEMP_BANNED_LIST__", temp_banned_html)\
                            .replace("__WHITELIST_LIST__", whitelist_html)\
                            .replace("__MAINT_TEXT__", maint_text)\
                            .replace("__MAINT_BTN_CLASS__", maint_btn_class)\
                            .replace("__AUTOBAN_TEXT__", autoban_text)\
                            .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)\
                            .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))\
+                           .replace("__BAN_DURATION__", str(BAN_DURATION))\
                            .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))\
                            .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))\
                            .replace("__STAT_200__", str(status_code_stats[200]))\
@@ -688,6 +713,17 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 if ip_to_unban in BANNED_IPS:
                     BANNED_IPS.remove(ip_to_unban)
                     save_settings()
+                self.send_response(303)
+                self.send_header('Location', '/admin?tab=security')
+                self.end_headers()
+                return
+
+        if path == "/admin/unban-temp":
+            cookie = self.headers.get("Cookie", "")
+            if f"session={ADMIN_PASSWORD}" in cookie:
+                ip_to_unban = query_params.get("ip", [""])[0]
+                if ip_to_unban in TEMPORARY_BANS:
+                    del TEMPORARY_BANS[ip_to_unban]
                 self.send_response(303)
                 self.send_header('Location', '/admin?tab=security')
                 self.end_headers()
@@ -739,7 +775,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(PUBLIC_HTML.encode("utf-8"))
 
     def do_POST(self):
-        global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, THROTTLE_DELAY, SERVER_LIMIT
+        global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
 
@@ -784,6 +820,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     if "max_ip_req" in params:
                         MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
+                    if "ban_duration" in params:
+                        BAN_DURATION = int(params["ban_duration"][0])
                     if "throttle_delay" in params:
                         THROTTLE_DELAY = float(params["throttle_delay"][0])
                     if "server_limit" in params:

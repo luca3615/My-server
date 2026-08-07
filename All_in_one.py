@@ -727,11 +727,22 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         }
         RECENT_LOGS.appendleft(log_entry)
 
+    # 1. Blockierung bei unzulässigem Client/Browser-Typ
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
         _, _, _, status_msg = analyze_client_detailed(self.headers)
         log_request(f"❌ Blockiert: {status_msg}")
+        self.send_response(303)
+        self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
+        self.end_headers()
+        return
+
+      # NEU: Unbekannte Länder / GeoIP-Fehler sofort abfangen und zu Google umleiten
+      geo_loc, country = get_geoip_and_country(client_ip)
+      if country == "Unbekannt":
+        status_code_stats[403] += 1
+        log_request(f"🚫 Unbekanntes Herkunftsland - Sofort-Umleitung zu Google")
         self.send_response(303)
         self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
         self.end_headers()

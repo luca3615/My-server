@@ -23,7 +23,7 @@ TRAFFIC_HISTORY = deque([0] * 30, maxlen=30)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_COUNT = 0
 
-SETTINGS_FILE = "settings.json"
+SETTINGS_FILE = "database.json"
 ADMIN_PASSWORD = "Luca123"
 
 TEMPORARY_BANS = {}
@@ -46,19 +46,66 @@ default_settings = {
     "allow_bots": False,
 }
 
+MAINTENANCE_MODE = False
+AUTO_BAN_ENABLED = True
+MAX_REQUESTS_PER_IP = 2
+BAN_DURATION = 10
+SERVER_LIMIT = 150
+THROTTLE_DELAY = 2.0
+BANNED_IPS = set()
+WHITELISTED_IPS = set()
+ALLOW_DESKTOP = True
+ALLOW_MOBILE = True
+ALLOW_CHROME = True
+ALLOW_FIREFOX = True
+ALLOW_SAFARI = True
+ALLOW_EDGE = True
+ALLOW_BOTS = False
+
 
 def load_settings():
+  global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, SERVER_LIMIT, THROTTLE_DELAY, BANNED_IPS, WHITELISTED_IPS
+  global ALLOW_DESKTOP, ALLOW_MOBILE, ALLOW_CHROME, ALLOW_FIREFOX, ALLOW_SAFARI, ALLOW_EDGE, ALLOW_BOTS
+
   if os.path.exists(SETTINGS_FILE):
     try:
       with open(SETTINGS_FILE, "r") as f:
         data = json.load(f)
-        for key in default_settings:
-          if key not in data:
-            data[key] = default_settings[key]
-        return data
+        MAINTENANCE_MODE = data.get("maintenance", default_settings["maintenance"])
+        AUTO_BAN_ENABLED = data.get("autoban", default_settings["autoban"])
+        MAX_REQUESTS_PER_IP = data.get("max_ip_req", default_settings["max_ip_req"])
+        BAN_DURATION = data.get("ban_duration", default_settings["ban_duration"])
+        SERVER_LIMIT = data.get("server_limit", default_settings["server_limit"])
+        THROTTLE_DELAY = data.get("throttle_delay", default_settings["throttle_delay"])
+        BANNED_IPS = set(data.get("banned_ips", default_settings["banned_ips"]))
+        WHITELISTED_IPS = set(data.get("whitelisted_ips", default_settings["whitelisted_ips"]))
+        ALLOW_DESKTOP = data.get("allow_desktop", default_settings["allow_desktop"])
+        ALLOW_MOBILE = data.get("allow_mobile", default_settings["allow_mobile"])
+        ALLOW_CHROME = data.get("allow_chrome", default_settings["allow_chrome"])
+        ALLOW_FIREFOX = data.get("allow_firefox", default_settings["allow_firefox"])
+        ALLOW_SAFARI = data.get("allow_safari", default_settings["allow_safari"])
+        ALLOW_EDGE = data.get("allow_edge", default_settings["allow_edge"])
+        ALLOW_BOTS = data.get("allow_bots", default_settings["allow_bots"])
+        return
     except:
       pass
-  return default_settings.copy()
+  
+  MAINTENANCE_MODE = default_settings["maintenance"]
+  AUTO_BAN_ENABLED = default_settings["autoban"]
+  MAX_REQUESTS_PER_IP = default_settings["max_ip_req"]
+  BAN_DURATION = default_settings["ban_duration"]
+  SERVER_LIMIT = default_settings["server_limit"]
+  THROTTLE_DELAY = default_settings["throttle_delay"]
+  BANNED_IPS = set(default_settings["banned_ips"])
+  WHITELISTED_IPS = set(default_settings["whitelisted_ips"])
+  ALLOW_DESKTOP = default_settings["allow_desktop"]
+  ALLOW_MOBILE = default_settings["allow_mobile"]
+  ALLOW_CHROME = default_settings["allow_chrome"]
+  ALLOW_FIREFOX = default_settings["allow_firefox"]
+  ALLOW_SAFARI = default_settings["allow_safari"]
+  ALLOW_EDGE = default_settings["allow_edge"]
+  ALLOW_BOTS = default_settings["allow_bots"]
+  save_settings()
 
 
 def save_settings():
@@ -86,22 +133,7 @@ def save_settings():
     pass
 
 
-config_data = load_settings()
-MAINTENANCE_MODE = config_data["maintenance"]
-AUTO_BAN_ENABLED = config_data["autoban"]
-MAX_REQUESTS_PER_IP = config_data["max_ip_req"]
-BAN_DURATION = config_data["ban_duration"]
-SERVER_LIMIT = config_data["server_limit"]
-THROTTLE_DELAY = config_data["throttle_delay"]
-BANNED_IPS = set(config_data["banned_ips"])
-WHITELISTED_IPS = set(config_data["whitelisted_ips"])
-ALLOW_DESKTOP = config_data["allow_desktop"]
-ALLOW_MOBILE = config_data["allow_mobile"]
-ALLOW_CHROME = config_data["allow_chrome"]
-ALLOW_FIREFOX = config_data["allow_firefox"]
-ALLOW_SAFARI = config_data["allow_safari"]
-ALLOW_EDGE = config_data["allow_edge"]
-ALLOW_BOTS = config_data["allow_bots"]
+load_settings()
 
 
 def update_traffic_history():
@@ -194,9 +226,7 @@ def analyze_client_detailed(headers):
   is_bot_or_script = is_known_script or is_bot_keyword or is_spoofed
 
   if is_bot_or_script:
-    status_msg = (
-        f"🤖 Bot erkannt {'(Getarnt/Spoofed)' if is_spoofed else ''}"
-    )
+    status_msg = f"🤖 Bot erkannt {'(Getarnt/Spoofed)' if is_spoofed else ''}"
   else:
     status_msg = f"Erlaubt ({device} - {browser})"
 
@@ -282,6 +312,8 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; min-height: 4px; width: 100%; transition: height 0.2s ease; }
         .bar:hover { opacity: 1; background: var(--accent); }
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
+        .admin-link { display: block; text-align: center; background: #1e293b; color: var(--text); padding: 12px; border-radius: 12px; text-decoration: none; font-weight: bold; font-size: 13px; border: 1px solid var(--border); margin-top: 15px; }
+        .admin-link:hover { background: #26334d; border-color: var(--primary); }
     </style>
 </head>
 <body>
@@ -308,6 +340,8 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     __CHART_BARS__
                 </div>
             </div>
+
+            <a href="/admin" class="admin-link">🔐 Zum Admin-Panel</a>
         </div>
     </div>
     <script>
@@ -678,9 +712,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     path = parsed_path.path
     query_params = urllib.parse.parse_qs(parsed_path.query)
 
-    is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
+    is_api_or_admin = path.startswith("/api/") or path.startswith("/admin") or path == "/banned-redirect"
 
-    # Universelle Hilfsfunktion, um jeden Request (erfolgreich oder geblockt) zu loggen
     def log_request(status_text):
       if not is_api_or_admin:
         geo_loc, country = get_geoip_and_country(client_ip)
@@ -694,13 +727,14 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         }
         RECENT_LOGS.appendleft(log_entry)
 
-    # Bot- und erweiterte Filterprüfung (außer für Admin / API)
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
         _, _, _, status_msg = analyze_client_detailed(self.headers)
         log_request(f"❌ Blockiert: {status_msg}")
-        self.send_error(403, "Access Denied - Advanced Client / Bot Filtered")
+        self.send_response(303)
+        self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
+        self.end_headers()
         return
 
     REQUEST_TIMESTAMPS.append(now)
@@ -729,7 +763,12 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
         status_code_stats[403] += 1
         log_request("🚫 403 IP Berechtigung entzogen / Bann")
-        self.send_error(403, "Access Denied - Banned / Rate Limited")
+        remaining_time = int(TEMPORARY_BANS.get(client_ip, now + BAN_DURATION) - now)
+        if remaining_time < 1:
+          remaining_time = BAN_DURATION
+        self.send_response(303)
+        self.send_header("Location", f"/banned-redirect?time={max(1, remaining_time)}")
+        self.end_headers()
         return
 
     if client_ip not in WHITELISTED_IPS:
@@ -742,11 +781,63 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
           TEMPORARY_BANS[client_ip] = now + BAN_DURATION
         status_code_stats[403] += 1
         log_request("⚡ 403 Rate Limit Überschritten (Auto-Ban)")
-        self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
+        self.send_response(303)
+        self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
+        self.end_headers()
         return
 
     TOTAL_REQUESTS_COUNT += 1
     update_traffic_history()
+
+    if path == "/banned-redirect":
+      ban_time_param = query_params.get("time", [str(BAN_DURATION)])[0]
+      try:
+        ban_seconds = int(ban_time_param)
+      except:
+        ban_seconds = BAN_DURATION
+
+      redirect_page = f"""<!DOCTYPE html>
+      <html lang="de">
+      <head>
+          <meta charset="UTF-8">
+          <title>Sicherheitssperre - Umleitung</title>
+          <style>
+              body {{ background: #05070a; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
+              .timer-box {{ position: fixed; top: 20px; right: 20px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #ef4444; padding: 10px 18px; border-radius: 12px; font-weight: bold; font-size: 14px; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }}
+              .center-msg {{ text-align: center; }}
+              h2 {{ color: #ef4444; margin-bottom: 10px; }}
+              p {{ color: #94a3b8; font-size: 13px; }}
+          </style>
+      </head>
+      <body>
+          <div class="timer-box">Sperre aktiv: <span id="countdown">{ban_seconds}</span>s</div>
+          <div class="center-msg">
+              <h2>🔒 Zugriff verweigert / Sicherheitssperre</h2>
+              <p>Du wurdest temporär umgeleitet. Du wirst gleich automatisch zur Hauptseite zurückgebracht...</p>
+          </div>
+          <script>
+              let timeLeft = {ban_seconds};
+              const timerEl = document.getElementById('countdown');
+              
+              // Sofort zu Google umleiten für die Dauer des Bans
+              window.location.replace("https://www.google.com");
+
+              const interval = setInterval(() => {{
+                  timeLeft--;
+                  timerEl.innerText = timeLeft;
+                  if(timeLeft <= 0) {{
+                      clearInterval(interval);
+                      window.location.href = "/";
+                  }}
+              }}, 1000);
+          </script>
+      </body>
+      </html>"""
+      self.send_response(200)
+      self.send_header("Content-type", "text/html; charset=utf-8")
+      self.end_headers()
+      self.wfile.write(redirect_page.encode("utf-8"))
+      return
 
     if path == "/api/stats":
       data = {
@@ -801,7 +892,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
           self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
         return
 
-      # Erfolgreichen Request loggen
       _, _, _, status_msg = analyze_client_detailed(self.headers)
       log_request(f"✅ {status_msg}")
 

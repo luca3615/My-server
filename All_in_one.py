@@ -26,7 +26,6 @@ CURRENT_SEC_COUNT = 0
 SETTINGS_FILE = "settings.json"
 ADMIN_PASSWORD = "Luca123"
 
-# Speichert temporäre Sperren als Dictionary: {ip: ablauf_timestamp}
 TEMPORARY_BANS = {}
 
 default_settings = {
@@ -163,10 +162,10 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 120px; }
+        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 130px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
-        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 4px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
-        .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; transition: height 0.3s ease; min-height: 4px; opacity: 0.8; position: relative; }
+        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 8px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
+        .bar { flex: 1; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 6px; opacity: 0.85; position: relative; }
         .bar:hover { opacity: 1; background: var(--accent); }
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
     </style>
@@ -198,8 +197,24 @@ PUBLIC_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
+        // Echten Server-Ping alle 0,8 Sekunden messen
+        function measurePing() {
+            const start = performance.now();
+            fetch('/api/stats?' + start, { method: 'HEAD', cache: 'no-store' })
+                .then(() => {
+                    const latency = Math.round(performance.now() - start);
+                    document.getElementById('server-ping').innerText = latency + ' ms';
+                })
+                .catch(() => {
+                    document.getElementById('server-ping').innerText = 'Error';
+                });
+        }
+        setInterval(measurePing, 800);
+        measurePing();
+
+        // Performance-optimiertes Live-Update (gegen Lag bei starkem Traffic)
         function updateStats() {
-            fetch('/api/stats', { mode: 'cors' })
+            fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
                 .then(res => res.json())
                 .then(data => {
                     document.getElementById('total-req').innerText = data.total;
@@ -215,7 +230,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
 
                     data.history.forEach(val => {
                         let heightPct = Math.round((val / maxVal) * 100);
-                        if (heightPct < 5) heightPct = 5;
+                        if (heightPct < 6) heightPct = 6;
                         barsHtml += `<div class="bar" style="height: ${heightPct}%;" title="${val} Anfragen"></div>`;
                     });
                     chart.innerHTML = barsHtml;
@@ -483,12 +498,10 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        // Automatisches Live-Update alle 0.5 Sekunden (500ms) für das Admin-Panel
         function refreshAdminData() {
-            fetch('/api/admin-data')
+            fetch('/api/admin-data', { cache: 'no-store' })
                 .then(res => res.json())
                 .then(data => {
-                    // Status Zähler aktualisieren (200, 403, 503, RPS etc.)
                     if(document.getElementById('stat-200')) document.getElementById('stat-200').innerText = data.stat_200;
                     if(document.getElementById('stat-403')) document.getElementById('stat-403').innerText = data.stat_403;
                     if(document.getElementById('stat-503')) document.getElementById('stat-503').innerText = data.stat_503;
@@ -496,7 +509,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     if(document.getElementById('peak-rps-val')) document.getElementById('peak-rps-val').innerText = data.peak_rps;
                     if(document.getElementById('active-ips-val')) document.getElementById('active-ips-val').innerText = data.active_ips;
 
-                    // Temporäre Bans dynamisch aktualisieren
                     const tempContainer = document.getElementById('temp-banned-container');
                     if(tempContainer) {
                         if(data.temp_bans.length === 0) {
@@ -524,13 +536,15 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             return xff.split(",")[0].strip()
         return self.client_address[0]
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
         global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT, TEMPORARY_BANS
         
         client_ip = self.get_client_ip()
         now = time.time()
         
-        # Abgelaufene temporäre Bans automatisch bereinigen
         expired_ips = [ip for ip, exp in TEMPORARY_BANS.items() if now > exp]
         for ip in expired_ips:
             del TEMPORARY_BANS[ip]
@@ -539,14 +553,12 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         path = parsed_path.path
         query_params = urllib.parse.parse_qs(parsed_path.query)
 
-        # Prüfung ob permanent oder temporär gebannt
         if client_ip not in WHITELISTED_IPS:
             if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
                 status_code_stats[403] += 1
                 self.send_error(403, "Access Denied - Banned / Rate Limited")
                 return
 
-        # Rate Limiting Check
         if client_ip not in WHITELISTED_IPS:
             timestamps = ip_request_counts[client_ip]
             timestamps[:] = [t for t in timestamps if t > now - 1.0]
@@ -570,7 +582,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if current_rps > PEAK_RPS:
             PEAK_RPS = current_rps
 
-        # API Endpunkt für Live-Statistiken der Startseite
         if path == "/api/stats":
             data = {
                 "total": TOTAL_REQUESTS_COUNT,
@@ -580,11 +591,12 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             }
             self.send_response(200)
             self.send_header("Content-type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
-            self.wfile.write(json.dumps(data).encode("utf-8"))
+            if self.command != "HEAD":
+                self.wfile.write(json.dumps(data).encode("utf-8"))
             return
 
-        # API Endpunkt für das 0.5s Live-Update im Admin-Panel
         if path == "/api/admin-data":
             cookie = self.headers.get("Cookie", "")
             if f"session={ADMIN_PASSWORD}" in cookie:
@@ -604,8 +616,10 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 }
                 self.send_response(200)
                 self.send_header("Content-type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
                 self.end_headers()
-                self.wfile.write(json.dumps(admin_data).encode("utf-8"))
+                if self.command != "HEAD":
+                    self.wfile.write(json.dumps(admin_data).encode("utf-8"))
                 return
             else:
                 self.send_response(401)
@@ -617,19 +631,24 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(503)
                 self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
+                if self.command != "HEAD":
+                    self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
                 return
 
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
+
+            if self.command == "HEAD":
+                return
 
             max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 3
             chart_html = ""
             for val in TRAFFIC_HISTORY:
                 height_pct = int((val / max_val) * 100)
-                if height_pct < 5: 
-                    height_pct = 5
+                if height_pct < 6: 
+                    height_pct = 6
                 chart_html += f'<div class="bar" style="height: {height_pct}%;" title="{val} Anfragen"></div>'
 
             page = PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))\
@@ -659,6 +678,9 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
                 
+                if self.command == "HEAD":
+                    return
+
                 active_tab = query_params.get("tab", ["logs"])[0]
                 
                 tabs = ["logs", "geo", "security", "status"]
@@ -743,7 +765,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
+                if self.command != "HEAD":
+                    self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
                 return
 
         if path == "/admin/unban-ip":
@@ -785,7 +808,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(503)
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
+            if self.command != "HEAD":
+                self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
             return
 
         if current_rps > SERVER_LIMIT:
@@ -811,7 +835,12 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
+        
+        if self.command == "HEAD":
+            return
+
         self.wfile.write(PUBLIC_HTML.encode("utf-8"))
 
     def do_POST(self):

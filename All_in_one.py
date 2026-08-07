@@ -37,14 +37,13 @@ default_settings = {
     "throttle_delay": 2.0,
     "banned_ips": [],
     "whitelisted_ips": ["127.0.0.1", "::1"],
-    # Neue Bot- & Geräteschutz-Regeln (True = Erlauben, False = Blockieren)
     "allow_desktop": True,
     "allow_mobile": True,
     "allow_chrome": True,
     "allow_firefox": True,
     "allow_safari": True,
     "allow_edge": True,
-    "allow_bots": False # Standardmäßig Bots blockieren
+    "allow_bots": False
 }
 
 def load_settings():
@@ -142,7 +141,7 @@ def parse_user_agent(ua_string):
     ua = ua_string.lower()
     if "mobile" in ua or "android" in ua or "iphone" in ua:
         device = "📱 Handy"
-    elif "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "baidu" in ua:
+    elif "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "baidu" in ua or "python" in ua or "curl" in ua:
         device = "🤖 Bot"
     else:
         device = "💻 Desktop"
@@ -151,27 +150,44 @@ def parse_user_agent(ua_string):
     elif "firefox" in ua: browser = "Firefox"
     elif "safari" in ua and "chrome" not in ua: browser = "Safari"
     elif "edge" in ua: browser = "Edge"
-    elif "bot" in ua or "crawler" in ua or "spider" in ua: browser = "Bot/Crawler"
+    elif "bot" in ua or "crawler" in ua or "python" in ua or "curl" in ua: browser = "Bot/Crawler"
     else: browser = "Web-Client"
     
     return f"{device} ({browser})"
 
-def is_client_allowed(ua_string):
+def is_client_allowed(headers):
+    ua_string = headers.get("User-Agent", "")
     ua = ua_string.lower()
     
-    # Bot-Prüfung
-    is_bot = "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua
+    # 1. Bekannte Skripte & Programmierbibliotheken sofort erkennen (Anti-Spoofing)
+    script_signatures = ["python", "requests", "urllib", "curl", "wget", "postman", "axios", "java/", "libwww"]
+    if any(sig in ua for sig in script_signatures):
+        return ALLOW_BOTS
+
+    # 2. Erkennung echter Bots / Crawler
+    is_bot = "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "ia_archiver" in ua
     if is_bot:
         return ALLOW_BOTS
 
-    # Gerät-Prüfung
+    # 3. Erweiterte Browser-Tarnungsprüfung (Spoofing-Erkennung)
+    # Echte moderne Browser senden fast immer 'sec-ch-ua' oder 'sec-fetch-dest'. 
+    # Einfache Bots, die nur "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36" faken, vergessen diese oft.
+    has_sec_headers = "sec-fetch-dest" in headers or "sec-ch-ua" in headers
+    
+    # Wenn der User-Agent vorgibt Chrome/Safari zu sein, aber gar keine modernen Browser-Header mitschickt -> Verdacht auf Bot!
+    if not has_sec_headers and ("chrome" in ua or "safari" in ua) and not "mobile" in ua:
+        # Strengere Prüfung: Wenn kein Bot erlaubt ist, blockieren wir diesen Fake-Browser
+        if not ALLOW_BOTS:
+            return False
+
+    # 4. Gerät-Prüfung
     is_mobile = "mobile" in ua or "android" in ua or "iphone" in ua
     if is_mobile and not ALLOW_MOBILE:
         return False
     if not is_mobile and not ALLOW_DESKTOP:
         return False
 
-    # Browser-Prüfung
+    # 5. Browser-Prüfung
     is_chrome = "chrome" in ua and "edge" not in ua and "opr" not in ua
     is_firefox = "firefox" in ua
     is_safari = "safari" in ua and "chrome" not in ua
@@ -641,14 +657,13 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
         ua_string = self.headers.get("User-Agent", "Unknown")
 
-        # Bot- und Gerätefilter Prüfung (außer für Admin / API)
+        # Bot- und erweiterte Filterprüfung (außer für Admin / API)
         if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
-            if not is_client_allowed(ua_string):
+            if not is_client_allowed(self.headers):
                 status_code_stats[403] += 1
-                self.send_error(403, "Access Denied - Filtered by Client / Bot Rules")
+                self.send_error(403, "Access Denied - Advanced Client / Bot Filtered")
                 return
 
-        # 1. RPS Berechnung aktualisieren
         REQUEST_TIMESTAMPS.append(now)
         while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
             REQUEST_TIMESTAMPS.popleft()
@@ -656,7 +671,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if current_rps > PEAK_RPS:
             PEAK_RPS = current_rps
 
-        # 2. SERVER LIMIT / OVERLOAD PRÜFUNG
         if not is_api_or_admin and current_rps > SERVER_LIMIT and client_ip not in WHITELISTED_IPS:
             status_code_stats[503] += 1
             self.send_response(503)
@@ -981,7 +995,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(post_data)
 
             if path == "/admin/update-settings":
-                # IP Aktionen abfangen falls ausgefüllt
                 ip_ban = params.get("ip_to_ban", [""])[0].strip()
                 if ip_ban:
                     BANNED_IPS.add(ip_ban)
@@ -995,7 +1008,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 if "toggle_autoban" in params:
                     AUTO_BAN_ENABLED = not AUTO_BAN_ENABLED
 
-                # Checkboxen für Geräte/Browser/Bots updaten
                 ALLOW_DESKTOP = "allow_desktop" in params
                 ALLOW_MOBILE = "allow_mobile" in params
                 ALLOW_CHROME = "allow_chrome" in params

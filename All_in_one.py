@@ -158,9 +158,11 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        /* Live Graph Styles */
-        .chart-container { background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; height: 120px; display: flex; align-items: flex-end; gap: 4px; position: relative; overflow: hidden; margin-bottom: 15px; }
-        .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; transition: height 0.3s ease; min-height: 4px; opacity: 0.8; }
+        /* Live Graph Styles mit Achsenbeschriftung an der Seite */
+        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 120px; }
+        .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 25px; user-select: none; }
+        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 4px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
+        .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; transition: height 0.3s ease; min-height: 4px; opacity: 0.8; position: relative; }
         .bar:hover { opacity: 1; background: var(--accent); }
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
     </style>
@@ -179,8 +181,15 @@ PUBLIC_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span style="color:var(--success);">● Live API aktiv</span></div>
-            <div class="chart-container" id="chart">
-                __CHART_BARS__
+            <div class="chart-wrapper">
+                <div class="chart-axis" id="chart-axis">
+                    <span id="axis-max">10</span>
+                    <span id="axis-mid">5</span>
+                    <span id="axis-min">0</span>
+                </div>
+                <div class="chart-container" id="chart">
+                    __CHART_BARS__
+                </div>
             </div>
         </div>
     </div>
@@ -208,7 +217,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     
                     const chart = document.getElementById('chart');
                     let barsHtml = '';
-                    const maxVal = data.history.length > 0 ? Math.max(...data.history, 1) : 1;
+                    const maxVal = data.history.length > 0 ? Math.max(...data.history, 3) : 3;
+                    
+                    // Werte für die Seitenachse dynamisch setzen
+                    document.getElementById('axis-max').innerText = maxVal;
+                    document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
+                    document.getElementById('axis-min').innerText = '0';
+
                     data.history.forEach(val => {
                         let heightPct = Math.round((val / maxVal) * 100);
                         if (heightPct < 5) heightPct = 5;
@@ -497,13 +512,11 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         path = parsed_path.path
         query_params = urllib.parse.parse_qs(parsed_path.query)
 
-        # Permanente Sperren-Prüfung ganz am Anfang
         if client_ip not in WHITELISTED_IPS and client_ip in BANNED_IPS:
             status_code_stats[403] += 1
             self.send_error(403, "Access Denied - Permanent Banned")
             return
 
-        # Rate Limiting & Auto-Ban Logik für normale Anfragen
         if client_ip not in WHITELISTED_IPS:
             timestamps = ip_request_counts[client_ip]
             timestamps[:] = [t for t in timestamps if t > now - 1.0]
@@ -528,7 +541,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if current_rps > PEAK_RPS:
             PEAK_RPS = current_rps
 
-        # API-Endpunkt für das asynchrone Aktualisieren im Hintergrund (ohne Seiten-Reload)
         if path == "/api/stats":
             data = {
                 "total": TOTAL_REQUESTS_COUNT,
@@ -554,7 +566,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.end_headers()
 
-            max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 1
+            max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 3
             chart_html = ""
             for val in TRAFFIC_HISTORY:
                 height_pct = int((val / max_val) * 100)

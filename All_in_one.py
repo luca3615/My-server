@@ -801,30 +801,17 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       <head>
           <meta charset="UTF-8">
           <title>Sicherheitssperre - Umleitung</title>
-          <style>
-              body {{ background: #05070a; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
-              .timer-box {{ position: fixed; top: 20px; right: 20px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #ef4444; padding: 10px 18px; border-radius: 12px; font-weight: bold; font-size: 14px; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }}
-              .center-msg {{ text-align: center; }}
-              h2 {{ color: #ef4444; margin-bottom: 10px; }}
-              p {{ color: #94a3b8; font-size: 13px; }}
-          </style>
       </head>
       <body>
-          <div class="timer-box">Sperre aktiv: <span id="countdown">{ban_seconds}</span>s</div>
-          <div class="center-msg">
-              <h2>🔒 Zugriff verweigert / Sicherheitssperre</h2>
-              <p>Du wurdest temporär umgeleitet. Du wirst gleich automatisch zur Hauptseite zurückgebracht...</p>
-          </div>
           <script>
               let timeLeft = {ban_seconds};
-              const timerEl = document.getElementById('countdown');
               
               // Sofort zu Google umleiten für die Dauer des Bans
               window.location.replace("https://www.google.com");
 
+              // Timer-Logik im Hintergrund bzw. wenn man zurückkommt
               const interval = setInterval(() => {{
                   timeLeft--;
-                  timerEl.innerText = timeLeft;
                   if(timeLeft <= 0) {{
                       clearInterval(interval);
                       window.location.href = "/";

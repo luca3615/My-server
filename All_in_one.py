@@ -199,8 +199,8 @@ MAINTENANCE_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wartungsarbeiten</title>
     <style>
-        body { background: #000000; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center; }
-        .box { background: #0b0f19; border: 1px solid #1e293b; padding: 40px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.9); max-width: 400px; width: 90%; }
+        body { background: #000000; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; text-align: center; padding: 15px; box-sizing: border-box; }
+        .box { background: #0b0f19; border: 1px solid #1e293b; padding: 40px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.9); max-width: 400px; width: 100%; }
         .gear { font-size: 55px; margin-bottom: 20px; display: inline-block; animation: spin 4s linear infinite; }
         h1 { font-size: 22px; margin-top: 0; margin-bottom: 10px; color: #38bdf8; }
         p { color: #94a3b8; font-size: 13px; line-height: 1.5; margin: 0; }
@@ -219,11 +219,13 @@ MAINTENANCE_HTML = """<!DOCTYPE html>
 ADMIN_LOGIN_HTML = """<!DOCTYPE html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8"><title>Admin Login</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login</title>
     <style>
-        body { background: #05070b; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .box { background: #131d31; padding: 30px; border-radius: 12px; border: 1px solid #1e293b; width: 300px; text-align: center; }
-        input { width: 90%; padding: 10px; margin: 10px 0; background: #090d16; border: 1px solid #1e293b; color: #fff; border-radius: 6px; }
+        body { background: #05070b; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 15px; box-sizing: border-box; }
+        .box { background: #131d31; padding: 30px; border-radius: 12px; border: 1px solid #1e293b; width: 100%; max-width: 300px; text-align: center; box-sizing: border-box; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #090d16; border: 1px solid #1e293b; color: #fff; border-radius: 6px; box-sizing: border-box; }
         button { width: 100%; padding: 10px; background: #3b82f6; border: none; color: #fff; border-radius: 6px; font-weight: bold; cursor: pointer; }
     </style>
 </head>
@@ -256,22 +258,22 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             --success: #22c55e;
             --warning: #f59e0b;
         }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
-        .container { width: 100%; max-width: 750px; }
-        .card { background: var(--card-bg); border: 1px solid var(--border); padding: 25px; border-radius: 16px; box-shadow: 0 15px 35px rgba(0,0,0,0.6); }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 15px; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; box-sizing: border-box; }
+        .container { width: 100%; max-width: 750px; margin-top: 10px; margin-bottom: 20px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 16px; box-shadow: 0 15px 35px rgba(0,0,0,0.6); }
         .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 16px; font-weight: bold; }
-        .sub-header { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .sub-header { font-size: 12px; color: var(--text-muted); margin-bottom: 15px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px; }
         .badge-aktiv { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); color: var(--success); padding: 3px 10px; border-radius: 20px; font-size: 11px; }
         
-        .tabs { display: flex; gap: 5px; background: #0b0f19; padding: 5px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 20px; }
-        .tab { flex: 1; padding: 8px; text-align: center; font-size: 12px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: 0.2s; }
+        .tabs { display: flex; gap: 4px; background: #0b0f19; padding: 4px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 15px; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+        .tab { flex: 1; min-width: 75px; padding: 8px 10px; text-align: center; font-size: 11px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: 0.2s; display: inline-block; }
         .tab.active { background: var(--primary); color: #fff; font-weight: bold; }
         
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         
-        table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: monospace; }
-        th, td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: monospace; }
+        th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
         th { color: var(--text-muted); font-weight: 600; }
         
         .btn { padding: 8px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; font-size: 12px; color: #fff; text-decoration: none; display: inline-block; text-align: center; }
@@ -282,11 +284,11 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
         
         input[type="text"], input[type="number"] { width: 100%; background: #090d16; border: 1px solid var(--border); color: #fff; padding: 10px; border-radius: 6px; box-sizing: border-box; margin-bottom: 10px; font-size: 13px; }
         
-        .ip-row { display: flex; justify-content: space-between; align-items: center; background: #090d16; border: 1px solid var(--border); padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; font-size: 13px; }
-        .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
-        .stat-card { background: #090d16; border: 1px solid var(--border); padding: 15px; border-radius: 10px; text-align: center; }
-        .stat-card .val { font-size: 18px; font-weight: bold; color: var(--primary); margin-top: 5px; }
-        .stat-card .lbl { font-size: 11px; color: var(--text-muted); }
+        .ip-row { display: flex; justify-content: space-between; align-items: center; background: #090d16; border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; font-size: 12px; word-break: break-all; }
+        .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 15px; }
+        .stat-card { background: #090d16; border: 1px solid var(--border); padding: 12px; border-radius: 10px; text-align: center; }
+        .stat-card .val { font-size: 16px; font-weight: bold; color: var(--primary); margin-top: 5px; }
+        .stat-card .lbl { font-size: 10px; color: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -313,7 +315,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             <!-- TAB 1: LIVE-LOGS -->
             <div class="tab-content __CONTENT_LOGS_ACTIVE__">
                 <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Echte Live-Anfragen mit echten IP-Adressen:</div>
-                <div style="max-height: 300px; overflow-y: auto;">
+                <div style="max-height: 280px; overflow-y: auto;">
                     <table>
                         <tr><th>Zeit</th><th>IP-Adresse</th><th>Standort</th><th>Pfad</th><th>Gerät</th></tr>
                         __LOGS_TABLE__
@@ -324,7 +326,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             <!-- TAB 2: GEO-TOP -->
             <div class="tab-content __CONTENT_GEO_ACTIVE__">
                 <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Top Länder-Herkunft (Traffic Verteilung):</div>
-                <div style="max-height: 300px; overflow-y: auto;">
+                <div style="max-height: 280px; overflow-y: auto;">
                     <table>
                         <tr><th>Land</th><th>Aufrufe</th></tr>
                         __GEO_TABLE__
@@ -342,7 +344,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     </div>
                 </form>
                 <div style="font-size: 13px; margin: 15px 0 8px 0;">Dauerhaft gesperrte IPs:</div>
-                <div style="max-height: 220px; overflow-y: auto;">
+                <div style="max-height: 200px; overflow-y: auto;">
                     __BANNED_LIST__
                 </div>
             </div>
@@ -357,7 +359,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     </div>
                 </form>
                 <div style="font-size: 13px; margin: 15px 0 8px 0;">Whitelisted IPs (von automatischem Sperren ausgenommen):</div>
-                <div style="max-height: 220px; overflow-y: auto;">
+                <div style="max-height: 200px; overflow-y: auto;">
                     __WHITELIST_LIST__
                 </div>
             </div>
@@ -397,7 +399,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 <div class="ip-row"><span>Aktive IP-Tracker im Speicher</span><span style="color:var(--primary);">__ACTIVE_IPS__</span></div>
             </div>
 
-            <div style="margin-top: 25px;">
+            <div style="margin-top: 20px;">
                 <a href="/admin/logout" class="btn btn-danger" style="width: 100%; text-align: center; display: block; box-sizing: border-box;">Abmelden</a>
             </div>
         </div>
@@ -407,7 +409,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
 
 class TrafficHandler(http.server.BaseHTTPRequestHandler):
     def get_client_ip(self):
-        # Liest die echte IP hinter Render / Cloudflare-Proxies aus
         xff = self.headers.get("X-Forwarded-For")
         if xff:
             return xff.split(",")[0].strip()
@@ -547,7 +548,6 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
             return
 
-        # Sicherheitsprüfung: Whitelist / Ban / Rate Limiting
         if client_ip not in WHITELISTED_IPS:
             if client_ip in BANNED_IPS:
                 status_code_stats[403] += 1
@@ -688,3 +688,4 @@ if __name__ == "__main__":
     with socketserver.TCPServer(("", PORT), TrafficHandler) as httpd:
         print(f"Server läuft auf Port {PORT}")
         httpd.serve_forever()
+

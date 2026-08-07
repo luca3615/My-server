@@ -147,54 +147,10 @@ def get_geoip_and_country(ip):
   return "Standort unbekannt", "Unbekannt"
 
 
-def parse_user_agent(ua_string):
-  ua = ua_string.lower()
-  if "mobile" in ua or "android" in ua or "iphone" in ua:
-    device = "📱 Handy"
-  elif (
-      "bot" in ua
-      or "crawler" in ua
-      or "spider" in ua
-      or "slurp" in ua
-      or "baidu" in ua
-      or "python" in ua
-      or "curl" in ua
-  ):
-    device = "🤖 Bot"
-  else:
-    device = "💻 Desktop"
-
-  if "chrome" in ua and "edge" not in ua and "opr" not in ua:
-    browser = "Chrome"
-  elif "firefox" in ua:
-    browser = "Firefox"
-  elif "safari" in ua and "chrome" not in ua:
-    browser = "Safari"
-  elif "edge" in ua:
-    browser = "Edge"
-  elif (
-      "bot" in ua
-      or "crawler" in ua
-      or "python" in ua
-      or "curl" in ua
-      or "requests" in ua
-  ):
-    browser = "Bot/Crawler"
-  else:
-    browser = "Web-Client"
-
-  return f"{device} ({browser})"
-
-
 def analyze_client_detailed(headers):
-  """Ermittelt präzise Browser, Gerät, ob es ein Bot/getarntes Skript ist
-
-  und gibt den passenden Log-Status-Text zurück.
-  """
   ua_string = headers.get("User-Agent", "")
   ua = ua_string.lower()
 
-  # 1. Bekannte Bibliotheken / Tools
   script_signatures = [
       "python",
       "requests",
@@ -207,8 +163,6 @@ def analyze_client_detailed(headers):
       "libwww",
   ]
   is_known_script = any(sig in ua for sig in script_signatures)
-
-  # 2. Crawler / Bots
   is_bot_keyword = (
       "bot" in ua
       or "crawler" in ua
@@ -216,8 +170,6 @@ def analyze_client_detailed(headers):
       or "slurp" in ua
       or "ia_archiver" in ua
   )
-
-  # 3. Anti-Spoofing (Getarnte Skripte)
   has_sec_headers = "sec-fetch-dest" in headers or "sec-ch-ua" in headers
   is_spoofed = (
       not is_known_script
@@ -227,7 +179,6 @@ def analyze_client_detailed(headers):
       and "mobile" not in ua
   )
 
-  # Browser-Bestimmung
   if "chrome" in ua and "edge" not in ua and "opr" not in ua:
     browser = "Google Chrome"
   elif "firefox" in ua:
@@ -239,10 +190,7 @@ def analyze_client_detailed(headers):
   else:
     browser = "Bot / Skript"
 
-  # Geräte-Bestimmung
   device = "Mobile" if ("mobile" in ua or "android" in ua or "iphone" in ua) else "Desktop"
-
-  # Ist es final ein Bot oder getarnt?
   is_bot_or_script = is_known_script or is_bot_keyword or is_spoofed
 
   if is_bot_or_script:
@@ -256,21 +204,13 @@ def analyze_client_detailed(headers):
 
 
 def is_client_allowed(headers):
-  ua_string = headers.get("User-Agent", "")
-  ua = ua_string.lower()
-
   browser, device, is_bot_or_script, _ = analyze_client_detailed(headers)
-
   if is_bot_or_script:
     return ALLOW_BOTS
-
-  # Geräte-Prüfung
   if device == "Mobile" and not ALLOW_MOBILE:
     return False
   if device == "Desktop" and not ALLOW_DESKTOP:
     return False
-
-  # Browser-Prüfung
   if browser == "Google Chrome" and not ALLOW_CHROME:
     return False
   if browser == "Mozilla Firefox" and not ALLOW_FIREFOX:
@@ -279,7 +219,6 @@ def is_client_allowed(headers):
     return False
   if browser == "Microsoft Edge" and not ALLOW_EDGE:
     return False
-
   return True
 
 
@@ -740,12 +679,27 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     query_params = urllib.parse.parse_qs(parsed_path.query)
 
     is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
-    ua_string = self.headers.get("User-Agent", "Unknown")
+
+    # Universelle Hilfsfunktion, um jeden Request (erfolgreich oder geblockt) zu loggen
+    def log_request(status_text):
+      if not is_api_or_admin:
+        geo_loc, country = get_geoip_and_country(client_ip)
+        country_stats[country] += 1
+        log_entry = {
+            "path": path,
+            "ua": status_text,
+            "real_ip": client_ip,
+            "geo": geo_loc,
+            "time": time.strftime("%H:%M:%S", time.localtime()),
+        }
+        RECENT_LOGS.appendleft(log_entry)
 
     # Bot- und erweiterte Filterprüfung (außer für Admin / API)
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
+        _, _, _, status_msg = analyze_client_detailed(self.headers)
+        log_request(f"❌ Blockiert: {status_msg}")
         self.send_error(403, "Access Denied - Advanced Client / Bot Filtered")
         return
 
@@ -762,6 +716,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         and client_ip not in WHITELISTED_IPS
     ):
       status_code_stats[503] += 1
+      log_request("⚠️ 503 Server Überlastet (DDoS Limit)")
       self.send_response(503)
       self.send_header("Content-type", "text/html; charset=utf-8")
       self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -773,6 +728,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     if client_ip not in WHITELISTED_IPS:
       if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
         status_code_stats[403] += 1
+        log_request("🚫 403 IP Berechtigung entzogen / Bann")
         self.send_error(403, "Access Denied - Banned / Rate Limited")
         return
 
@@ -785,6 +741,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if AUTO_BAN_ENABLED:
           TEMPORARY_BANS[client_ip] = now + BAN_DURATION
         status_code_stats[403] += 1
+        log_request("⚡ 403 Rate Limit Überschritten (Auto-Ban)")
         self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
         return
 
@@ -843,6 +800,10 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
           self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
         return
+
+      # Erfolgreichen Request loggen
+      _, _, _, status_msg = analyze_client_detailed(self.headers)
+      log_request(f"✅ {status_msg}")
 
       self.send_response(200)
       self.send_header("Content-type", "text/html; charset=utf-8")
@@ -1037,45 +998,44 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
           self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
         return
 
-        if path == "/admin/unban-ip":
-          cookie = self.headers.get("Cookie", "")
-          if f"session={ADMIN_PASSWORD}" in cookie:
-            ip_to_unban = query_params.get("ip", [""])[0]
-            if ip_to_unban in BANNED_IPS:
-              BANNED_IPS.remove(ip_to_unban)
-              save_settings()
-            self.send_response(303)
-            self.send_header("Location", "/admin?tab=security")
-            self.end_headers()
-            return
+    if path == "/admin/unban-ip":
+      cookie = self.headers.get("Cookie", "")
+      if f"session={ADMIN_PASSWORD}" in cookie:
+        ip_to_unban = query_params.get("ip", [""])[0]
+        if ip_to_unban in BANNED_IPS:
+          BANNED_IPS.remove(ip_to_unban)
+          save_settings()
+        self.send_response(303)
+        self.send_header("Location", "/admin?tab=security")
+        self.end_headers()
+        return
 
-        if path == "/admin/unban-temp":
-          cookie = self.headers.get("Cookie", "")
-          if f"session={ADMIN_PASSWORD}" in cookie:
-            ip_to_unban = query_params.get("ip", [""])[0]
-            if ip_to_unban in TEMPORARY_BANS:
-              del TEMPORARY_BANS[ip_to_unban]
-            self.send_response(303)
-            self.send_header("Location", "/admin?tab=security")
-            self.end_headers()
-            return
+    if path == "/admin/unban-temp":
+      cookie = self.headers.get("Cookie", "")
+      if f"session={ADMIN_PASSWORD}" in cookie:
+        ip_to_unban = query_params.get("ip", [""])[0]
+        if ip_to_unban in TEMPORARY_BANS:
+          del TEMPORARY_BANS[ip_to_unban]
+        self.send_response(303)
+        self.send_header("Location", "/admin?tab=security")
+        self.end_headers()
+        return
 
-        if path == "/admin/unremove-wl":
-          cookie = self.headers.get("Cookie", "")
-          if f"session={ADMIN_PASSWORD}" in cookie:
-            ip_to_wl = query_params.get("ip", [""])[0]
-            if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in [
-                "127.0.0.1",
-                "::1",
-            ]:
-              WHITELISTED_IPS.remove(ip_to_wl)
-              save_settings()
-            self.send_response(303)
-            self.send_header("Location", "/admin?tab=security")
-            self.end_headers()
-            return
+    if path == "/admin/unremove-wl":
+      cookie = self.headers.get("Cookie", "")
+      if f"session={ADMIN_PASSWORD}" in cookie:
+        ip_to_wl = query_params.get("ip", [""])[0]
+        if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in ["127.0.0.1", "::1"]:
+          WHITELISTED_IPS.remove(ip_to_wl)
+          save_settings()
+        self.send_response(303)
+        self.send_header("Location", "/admin?tab=security")
+        self.end_headers()
+        return
 
     if MAINTENANCE_MODE:
+      status_code_stats[503] += 1
+      log_request("⚙️ 503 Wartungsmodus aktiv")
       self.send_response(503)
       self.send_header("Content-type", "text/html; charset=utf-8")
       self.end_headers()
@@ -1087,17 +1047,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     country_stats[country] += 1
     status_code_stats[200] += 1
 
-    # Hier wird der Client im Detail analysiert und der Status für das Log generiert
     _, _, _, status_msg = analyze_client_detailed(self.headers)
-
-    log_entry = {
-        "path": path,
-        "ua": status_msg,  # Zeigt nun direkt an, ob Bot, getarnt oder welcher Browser genutzt wird!
-        "real_ip": client_ip,
-        "geo": geo_loc,
-        "time": time.strftime("%H:%M:%S", time.localtime()),
-    }
-    RECENT_LOGS.appendleft(log_entry)
+    log_request(f"✅ {status_msg}")
 
     self.send_response(200)
     self.send_header("Content-type", "text/html; charset=utf-8")

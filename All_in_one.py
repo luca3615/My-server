@@ -32,8 +32,8 @@ TEMPORARY_BANS = {}
 default_settings = {
     "maintenance": False,
     "autoban": True,
-    "max_ip_req": 2,          # Standardmäßig z.B. max 2 Anfragen pro Sekunde
-    "ban_duration": 10,       # Standardmäßig 10 Sekunden Sperre
+    "max_ip_req": 2,
+    "ban_duration": 10,
     "server_limit": 150,
     "throttle_delay": 2.0,
     "banned_ips": [],
@@ -175,7 +175,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
     <div class="container">
         <div class="card">
             <h1>Live Traffic Monitor <span class="status-pill">● Online & Geschützt</span></h1>
-            <p>Dein Server analysiert und schützt den Datenverkehr in Echtzeit ohne Neuladen.</p>
+            <p>Dein Server analysiert und schützt den Datenverkehr in Echtzeit.</p>
             
             <div class="stats-grid">
                 <div class="stat-box"><div class="lbl">Aufrufe</div><div class="val" id="total-req">__TOTAL_REQ__</div></div>
@@ -184,7 +184,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden mit Stresstest-L7</span></div>
+            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
             <div class="chart-wrapper">
                 <div class="chart-axis" id="chart-axis">
                     <span id="axis-max">10</span>
@@ -198,26 +198,10 @@ PUBLIC_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        function measurePing() {
-            const start = performance.now();
-            fetch('https://stresstest-l7.onrender.com/api/stats', { method: 'HEAD', mode: 'cors', cache: 'no-store' })
-                .then(() => {
-                    const duration = Math.round(performance.now() - start);
-                    document.getElementById('server-ping').innerText = duration + ' ms';
-                })
-                .catch(() => {
-                    document.getElementById('server-ping').innerText = 'Down';
-                });
-        }
-        setInterval(measurePing, 1000);
-
         function updateStats() {
-            fetch('https://stresstest-l7.onrender.com/api/stats', { mode: 'cors' })
+            fetch('/api/stats', { mode: 'cors' })
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('api-status').innerText = '● Stresstest-L7 Live';
-                    document.getElementById('api-status').style.color = 'var(--success)';
-                    
                     document.getElementById('total-req').innerText = data.total;
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
@@ -228,7 +212,6 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     
                     document.getElementById('axis-max').innerText = maxVal;
                     document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
-                    document.getElementById('axis-min').innerText = '0';
 
                     data.history.forEach(val => {
                         let heightPct = Math.round((val / maxVal) * 100);
@@ -237,12 +220,9 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     });
                     chart.innerHTML = barsHtml;
                 })
-                .catch(err => {
-                    document.getElementById('api-status').innerText = '○ Stresstest-L7 offline (Fallback aktiv)';
-                    document.getElementById('api-status').style.color = '#ef4444';
-                });
+                .catch(err => {});
         }
-        setInterval(updateStats, 1000);
+        setInterval(updateStats, 500);
     </script>
 </body>
 </html>"""
@@ -434,12 +414,12 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                             <button type="submit" class="btn btn-danger" style="width: 100%; padding: 7px;">Sperren</button>
                         </form>
                         <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Permanent gesperrt:</div>
-                        <div style="max-height: 110px; overflow-y: auto;">
+                        <div style="max-height: 110px; overflow-y: auto;" id="banned-list-container">
                             __BANNED_LIST__
                         </div>
                         
                         <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Temporär gesperrt (Auto-Ban):</div>
-                        <div style="max-height: 110px; overflow-y: auto;">
+                        <div style="max-height: 110px; overflow-y: auto;" id="temp-banned-container">
                             __TEMP_BANNED_LIST__
                         </div>
                     </div>
@@ -451,7 +431,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                             <button type="submit" class="btn btn-success" style="width: 100%; padding: 7px;">Erlauben</button>
                         </form>
                         <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Whitelisted:</div>
-                        <div style="max-height: 110px; overflow-y: auto;">
+                        <div style="max-height: 110px; overflow-y: auto;" id="whitelist-container">
                             __WHITELIST_LIST__
                         </div>
                     </div>
@@ -487,14 +467,14 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             <!-- TAB 4: STATUS -->
             <div class="tab-content __CONTENT_STATUS_ACTIVE__">
                 <div class="stats-row">
-                    <div class="stat-card"><div class="lbl">200 OK</div><div class="val" style="color:var(--success);">__STAT_200__</div></div>
-                    <div class="stat-card"><div class="lbl">403</div><div class="val" style="color:var(--danger);">__STAT_403__</div></div>
-                    <div class="stat-card"><div class="lbl">503</div><div class="val" style="color:var(--warning);">__STAT_503__</div></div>
+                    <div class="stat-card"><div class="lbl">200 OK</div><div class="val" style="color:var(--success);" id="stat-200">__STAT_200__</div></div>
+                    <div class="stat-card"><div class="lbl">403</div><div class="val" style="color:var(--danger);" id="stat-403">__STAT_403__</div></div>
+                    <div class="stat-card"><div class="lbl">503</div><div class="val" style="color:var(--warning);" id="stat-503">__STAT_503__</div></div>
                 </div>
                 <div style="font-size: 13px; margin-bottom: 10px; font-weight: bold;">Server-Echtzeit Status:</div>
-                <div class="ip-row"><span>Aktuelle RPS</span><span style="color:var(--primary);">__CURRENT_RPS__</span></div>
-                <div class="ip-row"><span>Peak RPS</span><span style="color:var(--primary);">__PEAK_RPS__</span></div>
-                <div class="ip-row"><span>Aktive IP-Tracker</span><span style="color:var(--primary);">__ACTIVE_IPS__</span></div>
+                <div class="ip-row"><span>Aktuelle RPS</span><span style="color:var(--primary);" id="curr-rps-val">__CURRENT_RPS__</span></div>
+                <div class="ip-row"><span>Peak RPS</span><span style="color:var(--primary);" id="peak-rps-val">__PEAK_RPS__</span></div>
+                <div class="ip-row"><span>Aktive IP-Tracker</span><span style="color:var(--primary);" id="active-ips-val">__ACTIVE_IPS__</span></div>
             </div>
 
             <div style="margin-top: 15px;">
@@ -502,6 +482,38 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             </div>
         </div>
     </div>
+    <script>
+        // Automatisches Live-Update alle 0.5 Sekunden (500ms) für das Admin-Panel
+        function refreshAdminData() {
+            fetch('/api/admin-data')
+                .then(res => res.json())
+                .then(data => {
+                    // Status Zähler aktualisieren (200, 403, 503, RPS etc.)
+                    if(document.getElementById('stat-200')) document.getElementById('stat-200').innerText = data.stat_200;
+                    if(document.getElementById('stat-403')) document.getElementById('stat-403').innerText = data.stat_403;
+                    if(document.getElementById('stat-503')) document.getElementById('stat-503').innerText = data.stat_503;
+                    if(document.getElementById('curr-rps-val')) document.getElementById('curr-rps-val').innerText = data.current_rps;
+                    if(document.getElementById('peak-rps-val')) document.getElementById('peak-rps-val').innerText = data.peak_rps;
+                    if(document.getElementById('active-ips-val')) document.getElementById('active-ips-val').innerText = data.active_ips;
+
+                    // Temporäre Bans dynamisch aktualisieren
+                    const tempContainer = document.getElementById('temp-banned-container');
+                    if(tempContainer) {
+                        if(data.temp_bans.length === 0) {
+                            tempContainer.innerHTML = '<div style="color:var(--text-muted); font-size:11px;">Keine aktiven temporären Bans.</div>';
+                        } else {
+                            let html = '';
+                            data.temp_bans.forEach(b => {
+                                html += `<div class="ip-row"><span>${b.ip} <small style="color:var(--warning);">(${b.remaining}s übrig)</small></span><a href="/admin/unban-temp?ip=${b.ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>`;
+                            });
+                            tempContainer.innerHTML = html;
+                        }
+                    }
+                })
+                .catch(err => {});
+        }
+        setInterval(refreshAdminData, 500);
+    </script>
 </body>
 </html>"""
 
@@ -534,7 +546,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(403, "Access Denied - Banned / Rate Limited")
                 return
 
-        # Rate Limiting Check (z.B. max X Anfragen pro Sekunde)
+        # Rate Limiting Check
         if client_ip not in WHITELISTED_IPS:
             timestamps = ip_request_counts[client_ip]
             timestamps[:] = [t for t in timestamps if t > now - 1.0]
@@ -542,7 +554,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             
             if len(timestamps) > MAX_REQUESTS_PER_IP:
                 if AUTO_BAN_ENABLED:
-                    # Temporären Ban für die konfigurierte Dauer setzen
                     TEMPORARY_BANS[client_ip] = now + BAN_DURATION
                 status_code_stats[403] += 1
                 self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
@@ -559,6 +570,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if current_rps > PEAK_RPS:
             PEAK_RPS = current_rps
 
+        # API Endpunkt für Live-Statistiken der Startseite
         if path == "/api/stats":
             data = {
                 "total": TOTAL_REQUESTS_COUNT,
@@ -571,6 +583,34 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(data).encode("utf-8"))
             return
+
+        # API Endpunkt für das 0.5s Live-Update im Admin-Panel
+        if path == "/api/admin-data":
+            cookie = self.headers.get("Cookie", "")
+            if f"session={ADMIN_PASSWORD}" in cookie:
+                temp_bans_list = []
+                for ip, exp_time in list(TEMPORARY_BANS.items()):
+                    remaining = max(0, int(exp_time - time.time()))
+                    temp_bans_list.append({"ip": ip, "remaining": remaining})
+
+                admin_data = {
+                    "stat_200": status_code_stats[200],
+                    "stat_403": status_code_stats[403],
+                    "stat_503": status_code_stats[503],
+                    "current_rps": current_rps,
+                    "peak_rps": PEAK_RPS,
+                    "active_ips": len(ip_request_counts),
+                    "temp_bans": temp_bans_list
+                }
+                self.send_response(200)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(admin_data).encode("utf-8"))
+                return
+            else:
+                self.send_response(401)
+                self.end_headers()
+                return
 
         if path == "/":
             if MAINTENANCE_MODE:

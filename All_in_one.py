@@ -258,15 +258,15 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             --success: #22c55e;
             --warning: #f59e0b;
         }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 15px; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; box-sizing: border-box; }
-        .container { width: 100%; max-width: 750px; margin-top: 10px; margin-bottom: 20px; }
-        .card { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 16px; box-shadow: 0 15px 35px rgba(0,0,0,0.6); }
-        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 16px; font-weight: bold; }
-        .sub-header { font-size: 12px; color: var(--text-muted); margin-bottom: 15px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; box-sizing: border-box; }
+        .container { width: 100%; max-width: 750px; margin-top: 5px; margin-bottom: 20px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); padding: 15px; border-radius: 16px; box-shadow: 0 15px 35px rgba(0,0,0,0.6); }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 16px; font-weight: bold; }
+        .sub-header { font-size: 11px; color: var(--text-muted); margin-bottom: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px; }
         .badge-aktiv { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); color: var(--success); padding: 3px 10px; border-radius: 20px; font-size: 11px; }
         
         .tabs { display: flex; gap: 4px; background: #0b0f19; padding: 4px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 15px; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
-        .tab { flex: 1; min-width: 75px; padding: 8px 10px; text-align: center; font-size: 11px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: 0.2s; display: inline-block; }
+        .tab { flex: 0 0 auto; padding: 8px 12px; text-align: center; font-size: 11px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: 0.2s; display: inline-block; }
         .tab.active { background: var(--primary); color: #fff; font-weight: bold; }
         
         .tab-content { display: none; }
@@ -399,7 +399,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 <div class="ip-row"><span>Aktive IP-Tracker im Speicher</span><span style="color:var(--primary);">__ACTIVE_IPS__</span></div>
             </div>
 
-            <div style="margin-top: 20px;">
+            <div style="margin-top: 15px;">
                 <a href="/admin/logout" class="btn btn-danger" style="width: 100%; text-align: center; display: block; box-sizing: border-box;">Abmelden</a>
             </div>
         </div>

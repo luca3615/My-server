@@ -7,7 +7,7 @@ import urllib.request
 from collections import deque, defaultdict
 import urllib.parse
 
-PORT = 8080
+PORT = int(os.environ.get("PORT", 8080))
 START_TIME = time.time()
 TOTAL_REQUESTS_COUNT = 0
 REQUEST_TIMESTAMPS = deque()
@@ -25,7 +25,7 @@ ADMIN_PASSWORD = "Eichenstrasse12"
 default_settings = {
     "maintenance": False,
     "autoban": True,
-    "max_ip_req": 2,
+    "max_ip_req": 5,
     "server_limit": 450,
     "throttle_delay": 2.0,
     "banned_ips": ["103.43.191.71", "175.6.75.144", "91.108.232.130", "213.207.198.254", "102.132.16.46"],
@@ -406,10 +406,17 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
 </html>"""
 
 class TrafficHandler(http.server.BaseHTTPRequestHandler):
+    def get_client_ip(self):
+        # Liest die echte IP hinter Render / Cloudflare-Proxies aus
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            return xff.split(",")[0].strip()
+        return self.client_address[0]
+
     def do_GET(self):
         global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, THROTTLE_DELAY, SERVER_LIMIT
         
-        client_ip = self.client_address[0]
+        client_ip = self.get_client_ip()
         now = time.time()
         
         TOTAL_REQUESTS_COUNT += 1
@@ -540,6 +547,7 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
             return
 
+        # Sicherheitsprüfung: Whitelist / Ban / Rate Limiting
         if client_ip not in WHITELISTED_IPS:
             if client_ip in BANNED_IPS:
                 status_code_stats[403] += 1
@@ -549,7 +557,6 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             ip_request_counts[client_ip] = [t for t in ip_request_counts[client_ip] if t > now - 1.0]
             ip_request_counts[client_ip].append(now)
             
-            # DDoS Schutz / IP-Drossler (Standard: Max 2 Anfragen pro Sekunde)
             if len(ip_request_counts[client_ip]) > MAX_REQUESTS_PER_IP:
                 if AUTO_BAN_ENABLED:
                     BANNED_IPS.add(client_ip)

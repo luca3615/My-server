@@ -36,7 +36,15 @@ default_settings = {
     "server_limit": 150,
     "throttle_delay": 2.0,
     "banned_ips": [],
-    "whitelisted_ips": ["127.0.0.1", "::1"]
+    "whitelisted_ips": ["127.0.0.1", "::1"],
+    # Neue Bot- & Geräteschutz-Regeln (True = Erlauben, False = Blockieren)
+    "allow_desktop": True,
+    "allow_mobile": True,
+    "allow_chrome": True,
+    "allow_firefox": True,
+    "allow_safari": True,
+    "allow_edge": True,
+    "allow_bots": False # Standardmäßig Bots blockieren
 }
 
 def load_settings():
@@ -62,7 +70,14 @@ def save_settings():
             "server_limit": SERVER_LIMIT,
             "throttle_delay": THROTTLE_DELAY,
             "banned_ips": list(BANNED_IPS),
-            "whitelisted_ips": list(WHITELISTED_IPS)
+            "whitelisted_ips": list(WHITELISTED_IPS),
+            "allow_desktop": ALLOW_DESKTOP,
+            "allow_mobile": ALLOW_MOBILE,
+            "allow_chrome": ALLOW_CHROME,
+            "allow_firefox": ALLOW_FIREFOX,
+            "allow_safari": ALLOW_SAFARI,
+            "allow_edge": ALLOW_EDGE,
+            "allow_bots": ALLOW_BOTS
         }
         with open(SETTINGS_FILE, "w") as f:
             json.dump(data, f, indent=4)
@@ -78,6 +93,13 @@ SERVER_LIMIT = config_data["server_limit"]
 THROTTLE_DELAY = config_data["throttle_delay"]
 BANNED_IPS = set(config_data["banned_ips"])
 WHITELISTED_IPS = set(config_data["whitelisted_ips"])
+ALLOW_DESKTOP = config_data["allow_desktop"]
+ALLOW_MOBILE = config_data["allow_mobile"]
+ALLOW_CHROME = config_data["allow_chrome"]
+ALLOW_FIREFOX = config_data["allow_firefox"]
+ALLOW_SAFARI = config_data["allow_safari"]
+ALLOW_EDGE = config_data["allow_edge"]
+ALLOW_BOTS = config_data["allow_bots"]
 
 def update_traffic_history():
     global LAST_SEC_TIMESTAMP, CURRENT_SEC_COUNT
@@ -120,19 +142,73 @@ def parse_user_agent(ua_string):
     ua = ua_string.lower()
     if "mobile" in ua or "android" in ua or "iphone" in ua:
         device = "📱 Handy"
-    elif "bot" in ua or "crawler" in ua or "spider" in ua:
+    elif "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "baidu" in ua:
         device = "🤖 Bot"
     else:
         device = "💻 Desktop"
     
-    if "chrome" in ua and "edge" not in ua: browser = "Chrome"
+    if "chrome" in ua and "edge" not in ua and "opr" not in ua: browser = "Chrome"
     elif "firefox" in ua: browser = "Firefox"
     elif "safari" in ua and "chrome" not in ua: browser = "Safari"
     elif "edge" in ua: browser = "Edge"
-    elif "bot" in ua: browser = "Bot/Crawler"
+    elif "bot" in ua or "crawler" in ua or "spider" in ua: browser = "Bot/Crawler"
     else: browser = "Web-Client"
     
     return f"{device} ({browser})"
+
+def is_client_allowed(ua_string):
+    ua = ua_string.lower()
+    
+    # Bot-Prüfung
+    is_bot = "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua
+    if is_bot:
+        return ALLOW_BOTS
+
+    # Gerät-Prüfung
+    is_mobile = "mobile" in ua or "android" in ua or "iphone" in ua
+    if is_mobile and not ALLOW_MOBILE:
+        return False
+    if not is_mobile and not ALLOW_DESKTOP:
+        return False
+
+    # Browser-Prüfung
+    is_chrome = "chrome" in ua and "edge" not in ua and "opr" not in ua
+    is_firefox = "firefox" in ua
+    is_safari = "safari" in ua and "chrome" not in ua
+    is_edge = "edge" in ua
+
+    if is_chrome and not ALLOW_CHROME: return False
+    if is_firefox and not ALLOW_FIREFOX: return False
+    if is_safari and not ALLOW_SAFARI: return False
+    if is_edge and not ALLOW_EDGE: return False
+
+    return True
+
+OVERLOAD_HTML = """<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>503 - Server Überlastet</title>
+    <style>
+        body { background: #090d16; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; text-align: center; padding: 15px; box-sizing: border-box; }
+        .box { background: #131d31; border: 1px solid #ef4444; padding: 40px; border-radius: 20px; box-shadow: 0 20px 40px rgba(239, 68, 68, 0.2); max-width: 420px; width: 100%; }
+        .icon { font-size: 50px; margin-bottom: 15px; display: inline-block; }
+        h1 { font-size: 22px; margin-top: 0; margin-bottom: 10px; color: #ef4444; }
+        p { color: #94a3b8; font-size: 13px; line-height: 1.5; margin: 0 0 20px 0; }
+        .btn { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; font-size: 13px; }
+        .btn:hover { background: #2563eb; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="icon">🛡️</div>
+        <h1>503 - Server Überlastet (DDoS Schutz)</h1>
+        <p>Der Server verarbeitet aktuell extrem viele Anfragen und hat das Sicherheits-Limit erreicht. Bitte versuche es in wenigen Sekunden erneut.</p>
+        <a href="/" class="btn">Erneut versuchen</a>
+    </div>
+</body>
+</html>"""
 
 PUBLIC_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -373,6 +449,8 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
         .stat-card .val { font-size: 18px; font-weight: bold; color: var(--primary); margin-top: 6px; }
         .stat-card .lbl { font-size: 11px; color: var(--text-muted); font-weight: 600; }
         .section-box { background: #080d1a; padding: 15px; border-radius: 14px; border: 1px solid var(--border); margin-bottom: 15px; }
+        .checkbox-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; font-size: 12px; }
+        .checkbox-label { display: flex; align-items: center; gap: 8px; background: #131d31; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; }
     </style>
 </head>
 <body>
@@ -393,7 +471,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 <a href="/admin?tab=status" class="tab-btn __TAB_STATUS_ACTIVE__">Status</a>
             </div>
 
-            <a href="/admin?tab=security" class="btn-sec-link __TAB_SEC_BTN_ACTIVE__">⚙️ Sicherheit, Sperren & Whitelist verwalten</a>
+            <a href="/admin?tab=security" class="btn-sec-link __TAB_SEC_BTN_ACTIVE__">⚙️ Sicherheit, Bot-Filter & Sperren</a>
 
             <!-- TAB 1: LIVE-LOGS -->
             <div class="tab-content __CONTENT_LOGS_ACTIVE__">
@@ -417,40 +495,49 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- TAB 3: SICHERHEIT & WL -->
+            <!-- TAB 3: SICHERHEIT & BOT-FILTER -->
             <div class="tab-content __CONTENT_SECURITY_ACTIVE__">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
-                    <div class="section-box" style="margin-bottom:0;">
-                        <form action="/admin/ban-ip" method="POST">
-                            <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP sperren:</div>
-                            <input type="text" name="ip" placeholder="z.B. 192.168.1.50" required style="margin-bottom: 8px;">
-                            <button type="submit" class="btn btn-danger" style="width: 100%; padding: 7px;">Sperren</button>
-                        </form>
-                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Permanent gesperrt:</div>
-                        <div style="max-height: 110px; overflow-y: auto;" id="banned-list-container">
-                            __BANNED_LIST__
-                        </div>
-                        
-                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Temporär gesperrt (Auto-Ban):</div>
-                        <div style="max-height: 110px; overflow-y: auto;" id="temp-banned-container">
-                            __TEMP_BANNED_LIST__
-                        </div>
-                    </div>
-
-                    <div class="section-box" style="margin-bottom:0;">
-                        <form action="/admin/whitelist-ip" method="POST">
-                            <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP Whitelist:</div>
-                            <input type="text" name="ip" placeholder="z.B. 192.168.1.100" required style="margin-bottom: 8px;">
-                            <button type="submit" class="btn btn-success" style="width: 100%; padding: 7px;">Erlauben</button>
-                        </form>
-                        <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Whitelisted:</div>
-                        <div style="max-height: 110px; overflow-y: auto;" id="whitelist-container">
-                            __WHITELIST_LIST__
-                        </div>
-                    </div>
-                </div>
-
                 <form action="/admin/update-settings" method="POST">
+                    <div class="section-box">
+                        <label style="font-size: 11px; color: var(--text-muted); display:block; margin-bottom: 8px; font-weight: bold;">GERÄTE & BOT ZULASSUNG (ERLAUBEN / BLOCKIEREN)</label>
+                        <div class="checkbox-grid">
+                            <label class="checkbox-label"><input type="checkbox" name="allow_desktop" __CHECKED_DESKTOP__> Desktop Rechner</label>
+                            <label class="checkbox-label"><input type="checkbox" name="allow_mobile" __CHECKED_MOBILE__> Mobile (Handys)</label>
+                            <label class="checkbox-label"><input type="checkbox" name="allow_chrome" __CHECKED_CHROME__> Google Chrome</label>
+                            <label class="checkbox-label"><input type="checkbox" name="allow_firefox" __CHECKED_FIREFOX__> Mozilla Firefox</label>
+                            <label class="checkbox-label"><input type="checkbox" name="allow_safari" __CHECKED_SAFARI__> Apple Safari</label>
+                            <label class="checkbox-label"><input type="checkbox" name="allow_edge" __CHECKED_EDGE__> Microsoft Edge</label>
+                            <label class="checkbox-label" style="grid-column: span 2; border-color: rgba(239,68,68,0.4);"><input type="checkbox" name="allow_bots" __CHECKED_BOTS__> Bots / Crawler zulassen</label>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+                        <div class="section-box" style="margin-bottom:0;">
+                            <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP sperren:</div>
+                            <input type="text" name="ip_to_ban" placeholder="z.B. 192.168.1.50" style="margin-bottom: 8px;">
+                            
+                            <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Permanent gesperrt:</div>
+                            <div style="max-height: 90px; overflow-y: auto;" id="banned-list-container">
+                                __BANNED_LIST__
+                            </div>
+                            
+                            <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Temporär gesperrt (Auto-Ban):</div>
+                            <div style="max-height: 90px; overflow-y: auto;" id="temp-banned-container">
+                                __TEMP_BANNED_LIST__
+                            </div>
+                        </div>
+
+                        <div class="section-box" style="margin-bottom:0;">
+                            <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP Whitelist:</div>
+                            <input type="text" name="ip_to_wl" placeholder="z.B. 192.168.1.100" style="margin-bottom: 8px;">
+                            
+                            <div style="font-size: 12px; font-weight: bold; margin: 12px 0 6px 0;">Whitelisted:</div>
+                            <div style="max-height: 110px; overflow-y: auto;" id="whitelist-container">
+                                __WHITELIST_LIST__
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="section-box">
                         <div style="margin-bottom: 14px;">
                             <label style="font-size: 11px; color: var(--text-muted); display:block; margin-bottom: 6px; font-weight: bold;">SYSTEM-STEUERUNG</label>
@@ -472,7 +559,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                             <input type="number" name="server_limit" value="__SERVER_LIMIT__" placeholder="Max. RPS Schwelle" required style="margin-bottom:0;">
                         </div>
 
-                        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px;">Einstellungen speichern</button>
+                        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px;">Einstellungen & Filter speichern</button>
                     </div>
                 </form>
             </div>
@@ -551,6 +638,35 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         path = parsed_path.path
         query_params = urllib.parse.parse_qs(parsed_path.query)
 
+        is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
+        ua_string = self.headers.get("User-Agent", "Unknown")
+
+        # Bot- und Gerätefilter Prüfung (außer für Admin / API)
+        if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
+            if not is_client_allowed(ua_string):
+                status_code_stats[403] += 1
+                self.send_error(403, "Access Denied - Filtered by Client / Bot Rules")
+                return
+
+        # 1. RPS Berechnung aktualisieren
+        REQUEST_TIMESTAMPS.append(now)
+        while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
+            REQUEST_TIMESTAMPS.popleft()
+        current_rps = len(REQUEST_TIMESTAMPS)
+        if current_rps > PEAK_RPS:
+            PEAK_RPS = current_rps
+
+        # 2. SERVER LIMIT / OVERLOAD PRÜFUNG
+        if not is_api_or_admin and current_rps > SERVER_LIMIT and client_ip not in WHITELISTED_IPS:
+            status_code_stats[503] += 1
+            self.send_response(503)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(OVERLOAD_HTML.encode("utf-8"))
+            return
+
         if client_ip not in WHITELISTED_IPS:
             if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
                 status_code_stats[403] += 1
@@ -571,14 +687,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
         TOTAL_REQUESTS_COUNT += 1
         update_traffic_history()
-
-        REQUEST_TIMESTAMPS.append(now)
-        while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
-            REQUEST_TIMESTAMPS.popleft()
-        
-        current_rps = len(REQUEST_TIMESTAMPS)
-        if current_rps > PEAK_RPS:
-            PEAK_RPS = current_rps
 
         if path == "/api/stats":
             data = {
@@ -755,7 +863,14 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                            .replace("__STAT_503__", str(status_code_stats[503]))\
                            .replace("__CURRENT_RPS__", str(current_rps))\
                            .replace("__PEAK_RPS__", str(PEAK_RPS))\
-                           .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))
+                           .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))\
+                           .replace("__CHECKED_DESKTOP__", "checked" if ALLOW_DESKTOP else "")\
+                           .replace("__CHECKED_MOBILE__", "checked" if ALLOW_MOBILE else "")\
+                           .replace("__CHECKED_CHROME__", "checked" if ALLOW_CHROME else "")\
+                           .replace("__CHECKED_FIREFOX__", "checked" if ALLOW_FIREFOX else "")\
+                           .replace("__CHECKED_SAFARI__", "checked" if ALLOW_SAFARI else "")\
+                           .replace("__CHECKED_EDGE__", "checked" if ALLOW_EDGE else "")\
+                           .replace("__CHECKED_BOTS__", "checked" if ALLOW_BOTS else "")
 
                 self.wfile.write(page.encode("utf-8"))
                 return
@@ -810,16 +925,10 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
             return
 
-        if current_rps > SERVER_LIMIT:
-            status_code_stats[503] += 1
-            self.send_error(503, "Server Overloaded")
-            return
-
         geo_loc, country = get_geoip_and_country(client_ip)
         country_stats[country] += 1
         status_code_stats[200] += 1
         
-        ua_string = self.headers.get("User-Agent", "Unknown")
         parsed_ua = parse_user_agent(ua_string)
         
         log_entry = {
@@ -843,6 +952,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT
+        global ALLOW_DESKTOP, ALLOW_MOBILE, ALLOW_CHROME, ALLOW_FIREFOX, ALLOW_SAFARI, ALLOW_EDGE, ALLOW_BOTS
+        
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
 
@@ -869,21 +980,30 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(post_data)
 
-            if path == "/admin/ban-ip":
-                ip_to_ban = params.get("ip", [""])[0].strip()
-                if ip_to_ban:
-                    BANNED_IPS.add(ip_to_ban)
-                    save_settings()
-            elif path == "/admin/whitelist-ip":
-                ip_to_wl = params.get("ip", [""])[0].strip()
-                if ip_to_wl:
-                    WHITELISTED_IPS.add(ip_to_wl)
-                    save_settings()
-            elif path == "/admin/update-settings":
+            if path == "/admin/update-settings":
+                # IP Aktionen abfangen falls ausgefüllt
+                ip_ban = params.get("ip_to_ban", [""])[0].strip()
+                if ip_ban:
+                    BANNED_IPS.add(ip_ban)
+                
+                ip_wl = params.get("ip_to_wl", [""])[0].strip()
+                if ip_wl:
+                    WHITELISTED_IPS.add(ip_wl)
+
                 if "toggle_maint" in params:
                     MAINTENANCE_MODE = not MAINTENANCE_MODE
                 if "toggle_autoban" in params:
                     AUTO_BAN_ENABLED = not AUTO_BAN_ENABLED
+
+                # Checkboxen für Geräte/Browser/Bots updaten
+                ALLOW_DESKTOP = "allow_desktop" in params
+                ALLOW_MOBILE = "allow_mobile" in params
+                ALLOW_CHROME = "allow_chrome" in params
+                ALLOW_FIREFOX = "allow_firefox" in params
+                ALLOW_SAFARI = "allow_safari" in params
+                ALLOW_EDGE = "allow_edge" in params
+                ALLOW_BOTS = "allow_bots" in params
+
                 try:
                     if "max_ip_req" in params:
                         MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])

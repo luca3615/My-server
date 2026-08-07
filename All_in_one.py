@@ -212,7 +212,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
         setInterval(measurePing, 800);
         measurePing();
 
-        // Performance-optimiertes Live-Update (gegen Lag bei starkem Traffic)
+        // Performance-optimiertes Live-Update
         function updateStats() {
             fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
                 .then(res => res.json())
@@ -643,6 +643,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 return
 
+            # Behoben: Sichere Ermittlung des Maximalwerts fürs Rendern der Säulen beim Erstaufruf
             max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 3
             chart_html = ""
             for val in TRAFFIC_HISTORY:

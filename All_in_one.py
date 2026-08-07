@@ -162,10 +162,10 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 130px; }
+        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 100px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
-        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 8px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
-        .bar { flex: 1; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 6px; opacity: 0.85; position: relative; }
+        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 6px; position: relative; height: 80px; border-left: 1px dashed var(--border); padding-left: 8px; }
+        .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; min-height: 4px; width: 100%; transition: height 0.2s ease; }
         .bar:hover { opacity: 1; background: var(--accent); }
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
     </style>
@@ -197,7 +197,6 @@ PUBLIC_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        // Echten Server-Ping alle 0,8 Sekunden messen
         function measurePing() {
             const start = performance.now();
             fetch('/api/stats?' + start, { method: 'HEAD', cache: 'no-store' })
@@ -212,7 +211,6 @@ PUBLIC_HTML = """<!DOCTYPE html>
         setInterval(measurePing, 800);
         measurePing();
 
-        // Performance-optimiertes Live-Update
         function updateStats() {
             fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
                 .then(res => res.json())
@@ -223,15 +221,15 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     
                     const chart = document.getElementById('chart');
                     let barsHtml = '';
-                    const maxVal = data.history.length > 0 ? Math.max(...data.history, 3) : 3;
+                    const maxVal = data.history.length > 0 ? Math.max(...data.history, 5) : 5;
                     
                     document.getElementById('axis-max').innerText = maxVal;
                     document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
 
                     data.history.forEach(val => {
-                        let heightPct = Math.round((val / maxVal) * 100);
-                        if (heightPct < 6) heightPct = 6;
-                        barsHtml += `<div class="bar" style="height: ${heightPct}%;" title="${val} Anfragen"></div>`;
+                        let heightPx = Math.round((val / maxVal) * 70);
+                        if (heightPx < 4) heightPx = 4;
+                        barsHtml += `<div class="bar" style="height: ${heightPx}px;" title="${val} Anfragen"></div>`;
                     });
                     chart.innerHTML = barsHtml;
                 })
@@ -643,14 +641,13 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 return
 
-            # Behoben: Sichere Ermittlung des Maximalwerts fürs Rendern der Säulen beim Erstaufruf
-            max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 3
+            max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 5
             chart_html = ""
             for val in TRAFFIC_HISTORY:
-                height_pct = int((val / max_val) * 100)
-                if height_pct < 6: 
-                    height_pct = 6
-                chart_html += f'<div class="bar" style="height: {height_pct}%;" title="{val} Anfragen"></div>'
+                height_px = int((val / max_val) * 70)
+                if height_px < 4: 
+                    height_px = 4
+                chart_html += f'<div class="bar" style="height: {height_px}px;" title="{val} Anfragen"></div>'
 
             page = PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))\
                               .replace("__CURRENT_RPS__", str(current_rps))\

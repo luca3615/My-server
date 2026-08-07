@@ -19,7 +19,7 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-# Live-Graph Historie (letzte 30 Sekunden für den Chart)
+# Live-Graph Historie (letzte 30 Sekunden)
 TRAFFIC_HISTORY = deque([0] * 30, maxlen=30)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_COUNT = 0
@@ -158,9 +158,9 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        /* Live Graph Styles mit Achsenbeschriftung an der Seite */
+        /* Live Graph mit Achsenbeschriftung an der Seite */
         .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 120px; }
-        .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 25px; user-select: none; }
+        .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
         .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 4px; position: relative; overflow: hidden; height: 100%; border-left: 1px dashed var(--border); padding-left: 8px; }
         .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; transition: height 0.3s ease; min-height: 4px; opacity: 0.8; position: relative; }
         .bar:hover { opacity: 1; background: var(--accent); }
@@ -180,7 +180,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span style="color:var(--success);">● Live API aktiv</span></div>
+            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Live aktiv</span></div>
             <div class="chart-wrapper">
                 <div class="chart-axis" id="chart-axis">
                     <span id="axis-max">10</span>
@@ -208,9 +208,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
         setInterval(measurePing, 500);
 
         function updateStats() {
+            // Versucht primär die lokalen Echtzeit-Daten abzurufen
             fetch('/api/stats')
                 .then(res => res.json())
                 .then(data => {
+                    document.getElementById('api-status').innerText = '● Live aktiv';
+                    document.getElementById('api-status').style.color = 'var(--success)';
+                    
                     document.getElementById('total-req').innerText = data.total;
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
@@ -219,7 +223,6 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     let barsHtml = '';
                     const maxVal = data.history.length > 0 ? Math.max(...data.history, 3) : 3;
                     
-                    // Werte für die Seitenachse dynamisch setzen
                     document.getElementById('axis-max').innerText = maxVal;
                     document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
                     document.getElementById('axis-min').innerText = '0';
@@ -231,7 +234,11 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     });
                     chart.innerHTML = barsHtml;
                 })
-                .catch(err => console.error(err));
+                .catch(err => {
+                    // Fallback, falls der Server nicht erreichbar ist
+                    document.getElementById('api-status').innerText = '○ Verbindung getrennt';
+                    document.getElementById('api-status').style.color = '#ef4444';
+                });
         }
         setInterval(updateStats, 1000);
     </script>
@@ -385,14 +392,12 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 <a href="/" style="color:var(--primary); text-decoration:none;">← Zur Startseite</a>
             </div>
 
-            <!-- Haupt-Tabs -->
             <div class="nav-tabs">
                 <a href="/admin?tab=logs" class="tab-btn __TAB_LOGS_ACTIVE__">Logs</a>
                 <a href="/admin?tab=geo" class="tab-btn __TAB_GEO_ACTIVE__">Geo-Top</a>
                 <a href="/admin?tab=status" class="tab-btn __TAB_STATUS_ACTIVE__">Status</a>
             </div>
 
-            <!-- Sicherheits-Tab Button -->
             <a href="/admin?tab=security" class="btn-sec-link __TAB_SEC_BTN_ACTIVE__">⚙️ Sicherheit, Sperren & Whitelist verwalten</a>
 
             <!-- TAB 1: LIVE-LOGS -->
@@ -420,7 +425,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
             <!-- TAB 3: SICHERHEIT & WL -->
             <div class="tab-content __CONTENT_SECURITY_ACTIVE__">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
-                    <!-- Sperren-Sektion -->
                     <div class="section-box" style="margin-bottom:0;">
                         <form action="/admin/ban-ip" method="POST">
                             <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP sperren:</div>
@@ -433,7 +437,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- Whitelist-Sektion -->
                     <div class="section-box" style="margin-bottom:0;">
                         <form action="/admin/whitelist-ip" method="POST">
                             <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">IP Whitelist:</div>
@@ -447,7 +450,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- DDoS & Server Limits -->
                 <form action="/admin/update-settings" method="POST">
                     <div class="section-box">
                         <div style="margin-bottom: 14px;">

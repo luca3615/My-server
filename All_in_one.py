@@ -28,7 +28,7 @@ default_settings = {
     "max_ip_req": 2,
     "server_limit": 450,
     "throttle_delay": 2.0,
-    "banned_ips": ["103.43.191.71", "175.6.75.144"],
+    "banned_ips": ["103.43.191.71", "175.6.75.144", "91.108.232.130", "213.207.198.254", "102.132.16.46"],
     "whitelisted_ips": ["127.0.0.1", "::1"]
 }
 
@@ -241,56 +241,166 @@ ADMIN_LOGIN_HTML = """<!DOCTYPE html>
 ADMIN_PANEL_HTML = """<!DOCTYPE html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8"><title>Admin Panel</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin-Steuerung</title>
     <style>
-        body { background: #05070b; color: #f1f5f9; font-family: sans-serif; padding: 20px; }
-        .container { max-width: 900px; margin: auto; }
-        .card { background: #131d31; border: 1px solid #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 20px; }
+        :root {
+            --bg: #05070b;
+            --card-bg: #131d31;
+            --border: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --danger: #ef4444;
+            --success: #22c55e;
+            --warning: #f59e0b;
+        }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
+        .container { width: 100%; max-width: 750px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); padding: 25px; border-radius: 16px; box-shadow: 0 15px 35px rgba(0,0,0,0.6); }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 16px; font-weight: bold; }
+        .sub-header { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .badge-aktiv { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); color: var(--success); padding: 3px 10px; border-radius: 20px; font-size: 11px; }
+        
+        .tabs { display: flex; gap: 5px; background: #0b0f19; padding: 5px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 20px; }
+        .tab { flex: 1; padding: 8px; text-align: center; font-size: 12px; font-weight: 500; color: var(--text-muted); background: transparent; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: 0.2s; }
+        .tab.active { background: var(--primary); color: #fff; font-weight: bold; }
+        
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
         table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: monospace; }
-        th, td { padding: 8px; border-bottom: 1px solid #1e293b; text-align: left; }
-        button { background: #3b82f6; border: none; color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
-        .btn-danger { background: #ef4444; }
-        input { background: #090d16; border: 1px solid #1e293b; color: #fff; padding: 6px; border-radius: 4px; }
+        th, td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; }
+        th { color: var(--text-muted); font-weight: 600; }
+        
+        .btn { padding: 8px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; font-size: 12px; color: #fff; text-decoration: none; display: inline-block; text-align: center; }
+        .btn-primary { background: var(--primary); }
+        .btn-danger { background: var(--danger); }
+        .btn-warning { background: var(--warning); color: #000; }
+        .btn-success { background: var(--success); }
+        
+        input[type="text"], input[type="number"] { width: 100%; background: #090d16; border: 1px solid var(--border); color: #fff; padding: 10px; border-radius: 6px; box-sizing: border-box; margin-bottom: 10px; font-size: 13px; }
+        
+        .ip-row { display: flex; justify-content: space-between; align-items: center; background: #090d16; border: 1px solid var(--border); padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; font-size: 13px; }
+        
+        .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stat-card { background: #090d16; border: 1px solid var(--border); padding: 15px; border-radius: 10px; text-align: center; }
+        .stat-card .val { font-size: 18px; font-weight: bold; color: var(--primary); margin-top: 5px; }
+        .stat-card .lbl { font-size: 11px; color: var(--text-muted); }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>Admin Bedienpanel</h2>
         <div class="card">
-            <h3>Steuerung & DDoS-Schutz (Max 2 Req/Sek pro IP)</h3>
-            <form action="/admin/toggle-maintenance" method="POST" style="display:inline;">
-                <button type="submit">Wartungsmodus umschalten (__MAINT_STATUS__)</button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h3>IP-Sicherheit & Verwaltung</h3>
-            <div style="display: flex; gap: 20px;">
-                <div>
-                    <h4>Gesperrte IPs (Banned)</h4>
-                    <ul>__BANNED_LIST__</ul>
-                    <form action="/admin/ban-ip" method="POST">
-                        <input type="text" name="ip" placeholder="IP sperren..." required>
-                        <button type="submit" class="btn-danger">Sperren</button>
-                    </form>
-                </div>
-                <div>
-                    <h4>Erlaubte IPs (Whitelist)</h4>
-                    <ul>__WHITELIST_LIST__</ul>
-                    <form action="/admin/whitelist-ip" method="POST">
-                        <input type="text" name="ip" placeholder="IP whitelisten..." required>
-                        <button type="submit">Hinzufügen</button>
-                    </form>
+            <div class="header-row">
+                <span>Admin-Steuerung</span>
+                <span class="badge-aktiv">● Aktiv</span>
+            </div>
+            <div class="sub-header">
+                <span id="session-timeout">Session-Timeout in 10:00 min</span>
+                <span id="uptime-display">Uptime: 0m 0s</span>
+            </div>
+
+            <div class="tabs">
+                <a href="/admin?tab=logs" class="tab __TAB_LOGS_ACTIVE__">Live-Logs</a>
+                <a href="/admin?tab=geo" class="tab __TAB_GEO_ACTIVE__">Geo-Top</a>
+                <a href="/admin?tab=banned" class="tab __TAB_BANNED_ACTIVE__">Sperren</a>
+                <a href="/admin?tab=whitelist" class="tab __TAB_WL_ACTIVE__">Whitelist</a>
+                <a href="/admin?tab=security" class="tab __TAB_SEC_ACTIVE__">Sicherheit</a>
+                <a href="/admin?tab=status" class="tab __TAB_STATUS_ACTIVE__">Status</a>
+            </div>
+
+            <!-- TAB 1: LIVE-LOGS -->
+            <div class="tab-content __CONTENT_LOGS_ACTIVE__">
+                <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Echte Live-Anfragen mit echten IP-Adressen:</div>
+                <div style="max-height: 300px; overflow-y: auto;">
+                    <table>
+                        <tr><th>Zeit</th><th>IP-Adresse</th><th>Standort</th><th>Pfad</th><th>Gerät</th></tr>
+                        __LOGS_TABLE__
+                    </table>
                 </div>
             </div>
-        </div>
 
-        <div class="card">
-            <h3>Echte Live-Anfragen (Mit echten IPs & Geo)</h3>
-            <table>
-                <tr><th>Zeit</th><th>IP-Adresse</th><th>Standort</th><th>Pfad</th><th>Browser/Gerät</th></tr>
-                __LOGS_TABLE__
-            </table>
+            <!-- TAB 2: GEO-TOP -->
+            <div class="tab-content __CONTENT_GEO_ACTIVE__">
+                <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Top Länder-Herkunft (Traffic Verteilung):</div>
+                <div style="max-height: 300px; overflow-y: auto;">
+                    <table>
+                        <tr><th>Land</th><th>Aufrufe</th></tr>
+                        __GEO_TABLE__
+                    </table>
+                </div>
+            </div>
+
+            <!-- TAB 3: SPERREN -->
+            <div class="tab-content __CONTENT_BANNED_ACTIVE__">
+                <form action="/admin/ban-ip" method="POST">
+                    <div style="font-size: 13px; margin-bottom: 5px;">IP manuell permanent sperren:</div>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" name="ip" placeholder="z.B. 192.168.1.50" required>
+                        <button type="submit" class="btn btn-danger" style="height: 41px;">Sperren</button>
+                    </div>
+                </form>
+                <div style="font-size: 13px; margin: 15px 0 8px 0;">Dauerhaft gesperrte IPs:</div>
+                <div style="max-height: 220px; overflow-y: auto;">
+                    __BANNED_LIST__
+                </div>
+            </div>
+
+            <!-- TAB 4: WHITELIST -->
+            <div class="tab-content __CONTENT_WL_ACTIVE__">
+                <form action="/admin/whitelist-ip" method="POST">
+                    <div style="font-size: 13px; margin-bottom: 5px;">IP zur Whitelist hinzufügen (Schutz vor Auto-Ban):</div>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" name="ip" placeholder="z.B. 192.168.1.100" required>
+                        <button type="submit" class="btn btn-success" style="height: 41px;">Erlauben</button>
+                    </div>
+                </form>
+                <div style="font-size: 13px; margin: 15px 0 8px 0;">Whitelisted IPs (von automatischem Sperren ausgenommen):</div>
+                <div style="max-height: 220px; overflow-y: auto;">
+                    __WHITELIST_LIST__
+                </div>
+            </div>
+
+            <!-- TAB 5: SICHERHEIT -->
+            <div class="tab-content __CONTENT_SEC_ACTIVE__">
+                <form action="/admin/update-settings" method="POST">
+                    <div style="font-size: 13px; margin-bottom: 5px;">Wartungsmodus (Lehnt normale Besucher ab):</div>
+                    <button type="submit" name="toggle_maint" value="1" class="btn __MAINT_BTN_CLASS__" style="width: 100%; margin-bottom: 15px;">Wartung: __MAINT_TEXT__</button>
+                    
+                    <div style="font-size: 13px; margin-bottom: 5px;">Automatischer Bot-Schutz (IP Ratenbegrenzung & Auto-Ban):</div>
+                    <button type="submit" name="toggle_autoban" value="1" class="btn __AUTOBAN_BTN_CLASS__" style="width: 100%; margin-bottom: 15px;">Auto-Bot-Schutz: __AUTOBAN_TEXT__</button>
+
+                    <div style="font-size: 13px; margin-bottom: 5px;">Max. Anfragen pro IP innerhalb von 1 Sekunde:</div>
+                    <input type="number" name="max_ip_req" value="__MAX_IP_REQ__" required>
+
+                    <div style="font-size: 13px; margin-bottom: 5px;">Throttling-Verzögerung (Sekunden):</div>
+                    <input type="number" step="0.1" name="throttle_delay" value="__THROTTLE_DELAY__" required>
+
+                    <div style="font-size: 13px; margin-bottom: 5px;">Globales Website-Limit (RPS Schwelle für 503):</div>
+                    <input type="number" name="server_limit" value="__SERVER_LIMIT__" required>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 10px;">Einstellungen speichern</button>
+                </form>
+            </div>
+
+            <!-- TAB 6: STATUS -->
+            <div class="tab-content __CONTENT_STATUS_ACTIVE__">
+                <div class="stats-row">
+                    <div class="stat-card"><div class="lbl">200 OK</div><div class="val" style="color:var(--success);">__STAT_200__</div></div>
+                    <div class="stat-card"><div class="lbl">403 Forbidden</div><div class="val" style="color:var(--danger);">__STAT_403__</div></div>
+                    <div class="stat-card"><div class="lbl">503 Overloaded</div><div class="val" style="color:var(--warning);">__STAT_503__</div></div>
+                </div>
+                <div style="font-size: 13px; margin-bottom: 10px;">Server-Echtzeit Status:</div>
+                <div class="ip-row"><span>Aktuelle RPS</span><span style="color:var(--primary);">__CURRENT_RPS__</span></div>
+                <div class="ip-row"><span>Peak RPS</span><span style="color:var(--primary);">__PEAK_RPS__</span></div>
+                <div class="ip-row"><span>Aktive IP-Tracker im Speicher</span><span style="color:var(--primary);">__ACTIVE_IPS__</span></div>
+            </div>
+
+            <div style="margin-top: 25px;">
+                <a href="/admin/logout" class="btn btn-danger" style="width: 100%; text-align: center; display: block; box-sizing: border-box;">Abmelden</a>
+            </div>
         </div>
     </div>
 </body>
@@ -315,6 +425,14 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
 
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+
+        if path == "/admin/logout":
+            self.send_response(303)
+            self.send_header('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
+            self.send_header('Location', '/admin')
+            self.end_headers()
+            return
 
         if path == "/admin":
             cookie = self.headers.get("Cookie", "")
@@ -323,18 +441,67 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-type", "text/html; charset=utf-8")
                 self.end_headers()
                 
+                active_tab = query_params.get("tab", ["logs"])[0]
+                
+                # Tab Aktive Klassen setzen
+                tabs = ["logs", "geo", "banned", "whitelist", "security", "status"]
+                tab_replacements = {}
+                for t in tabs:
+                    is_active = (t == active_tab)
+                    tab_replacements[f"__TAB_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
+                    tab_replacements[f"__CONTENT_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
+
                 logs_html = ""
                 for l in RECENT_LOGS:
                     logs_html += f"<tr><td>{l['time']}</td><td>{l['real_ip']}</td><td>{l['geo']}</td><td>{l['path']}</td><td>{l['ua']}</td></tr>"
                 
-                banned_html = "".join([f"<li>{ip} <a href='/admin/unban-ip?ip={ip}' style='color:#ef4444;text-decoration:none;'>[Entfernen]</a></li>" for ip in BANNED_IPS])
-                whitelist_html = "".join([f"<li>{ip}</li>" for ip in WHITELISTED_IPS])
-                maint_text = "AN (Aktiv)" if MAINTENANCE_MODE else "AUS (Inaktiv)"
+                geo_html = ""
+                sorted_geo = sorted(country_stats.items(), key=lambda x: x[1], reverse=True)
+                for country, count in sorted_geo:
+                    geo_html += f"<tr><td>🌍 {country}</td><td>{count} Aufrufe</td></tr>"
+                if not geo_html:
+                    geo_html = "<tr><td colspan='2'>Noch keine Daten vorhanden.</td></tr>"
 
-                page = ADMIN_PANEL_HTML.replace("__LOGS_TABLE__", logs_html)\
-                                       .replace("__BANNED_LIST__", banned_html)\
-                                       .replace("__WHITELIST_LIST__", whitelist_html)\
-                                       .replace("__MAINT_STATUS__", maint_text)
+                banned_html = ""
+                for ip in BANNED_IPS:
+                    banned_html += f'<div class="ip-row"><span>{ip}</span><a href="/admin/unban-ip?ip={ip}" class="btn btn-danger" style="padding:4px 10px; font-size:11px; text-decoration:none;">Freigeben</a></div>'
+                if not banned_html:
+                    banned_html = '<div style="color:var(--text-muted); font-size:12px;">Keine gesperrten IPs.</div>'
+
+                whitelist_html = ""
+                for ip in WHITELISTED_IPS:
+                    whitelist_html += f'<div class="ip-row"><span>{ip}</span><a href="/admin/unremove-wl?ip={ip}" class="btn btn-danger" style="padding:4px 10px; font-size:11px; text-decoration:none;">Entfernen</a></div>'
+                if not whitelist_html:
+                    whitelist_html = '<div style="color:var(--text-muted); font-size:12px;">Keine whitelisted IPs.</div>'
+
+                maint_text = "AN" if MAINTENANCE_MODE else "AUS"
+                maint_btn_class = "btn-warning" if MAINTENANCE_MODE else "btn-primary"
+                
+                autoban_text = "AN" if AUTO_BAN_ENABLED else "AUS"
+                autoban_btn_class = "btn-primary" if AUTO_BAN_ENABLED else "btn-danger"
+
+                page = ADMIN_PANEL_HTML
+                for k, v in tab_replacements.items():
+                    page = page.replace(k, v)
+
+                page = page.replace("__LOGS_TABLE__", logs_html)\
+                           .replace("__GEO_TABLE__", geo_html)\
+                           .replace("__BANNED_LIST__", banned_html)\
+                           .replace("__WHITELIST_LIST__", whitelist_html)\
+                           .replace("__MAINT_TEXT__", maint_text)\
+                           .replace("__MAINT_BTN_CLASS__", maint_btn_class)\
+                           .replace("__AUTOBAN_TEXT__", autoban_text)\
+                           .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)\
+                           .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))\
+                           .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))\
+                           .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))\
+                           .replace("__STAT_200__", str(status_code_stats[200]))\
+                           .replace("__STAT_403__", str(status_code_stats[403]))\
+                           .replace("__STAT_503__", str(status_code_stats[503]))\
+                           .replace("__CURRENT_RPS__", str(current_rps))\
+                           .replace("__PEAK_RPS__", str(PEAK_RPS))\
+                           .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))
+
                 self.wfile.write(page.encode("utf-8"))
                 return
             else:
@@ -344,16 +511,27 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
                 return
 
-        if path.startswith("/admin/unban-ip"):
+        if path == "/admin/unban-ip":
             cookie = self.headers.get("Cookie", "")
             if f"session={ADMIN_PASSWORD}" in cookie:
-                query = urllib.parse.parse_qs(parsed_path.query)
-                ip_to_unban = query.get("ip", [""])[0]
+                ip_to_unban = query_params.get("ip", [""])[0]
                 if ip_to_unban in BANNED_IPS:
                     BANNED_IPS.remove(ip_to_unban)
                     save_settings()
                 self.send_response(303)
-                self.send_header('Location', '/admin')
+                self.send_header('Location', '/admin?tab=banned')
+                self.end_headers()
+                return
+
+        if path == "/admin/unremove-wl":
+            cookie = self.headers.get("Cookie", "")
+            if f"session={ADMIN_PASSWORD}" in cookie:
+                ip_to_wl = query_params.get("ip", [""])[0]
+                if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in ["127.0.0.1", "::1"]:
+                    WHITELISTED_IPS.remove(ip_to_wl)
+                    save_settings()
+                self.send_response(303)
+                self.send_header('Location', '/admin?tab=whitelist')
                 self.end_headers()
                 return
 
@@ -373,13 +551,12 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             ip_request_counts[client_ip] = [t for t in ip_request_counts[client_ip] if t > now - 1.0]
             ip_request_counts[client_ip].append(now)
             
-            # IP Drossler / DDoS Schutz: Max 2 Anfragen pro Sekunde pro IP (Auto-Ban bei Überschreitung wenn aktiv)
             if len(ip_request_counts[client_ip]) > MAX_REQUESTS_PER_IP:
                 if AUTO_BAN_ENABLED:
                     BANNED_IPS.add(client_ip)
                     save_settings()
-                status_code_stats[429] += 1
-                self.send_error(429, "Too Many Requests (Rate Limit Exceeded)")
+                status_code_stats[403] += 1
+                self.send_error(403, "Rate Limit Exceeded (Too Many Requests)")
                 return
 
         if current_rps > SERVER_LIMIT:
@@ -433,7 +610,7 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(PUBLIC_HTML.encode("utf-8"))
 
     def do_POST(self):
-        global MAINTENANCE_MODE
+        global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, THROTTLE_DELAY, SERVER_LIMIT
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
 
@@ -460,22 +637,38 @@ class TrafficHandler(http.server.BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(post_data)
 
-            if path == "/admin/toggle-maintenance":
-                MAINTENANCE_MODE = not MAINTENANCE_MODE
-                save_settings()
-            elif path == "/admin/ban-ip":
+            redirect_tab = "logs"
+            if path == "/admin/ban-ip":
                 ip_to_ban = params.get("ip", [""])[0].strip()
                 if ip_to_ban:
                     BANNED_IPS.add(ip_to_ban)
                     save_settings()
+                redirect_tab = "banned"
             elif path == "/admin/whitelist-ip":
                 ip_to_wl = params.get("ip", [""])[0].strip()
                 if ip_to_wl:
                     WHITELISTED_IPS.add(ip_to_wl)
                     save_settings()
+                redirect_tab = "whitelist"
+            elif path == "/admin/update-settings":
+                if "toggle_maint" in params:
+                    MAINTENANCE_MODE = not MAINTENANCE_MODE
+                if "toggle_autoban" in params:
+                    AUTO_BAN_ENABLED = not AUTO_BAN_ENABLED
+                try:
+                    if "max_ip_req" in params:
+                        MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
+                    if "throttle_delay" in params:
+                        THROTTLE_DELAY = float(params["throttle_delay"][0])
+                    if "server_limit" in params:
+                        SERVER_LIMIT = int(params["server_limit"][0])
+                except:
+                    pass
+                save_settings()
+                redirect_tab = "security"
 
             self.send_response(303)
-            self.send_header('Location', '/admin')
+            self.send_header('Location', f'/admin?tab={redirect_tab}')
             self.end_headers()
             return
 
@@ -489,4 +682,3 @@ if __name__ == "__main__":
     with socketserver.TCPServer(("", PORT), TrafficHandler) as httpd:
         print(f"Server läuft auf Port {PORT}")
         httpd.serve_forever()
-

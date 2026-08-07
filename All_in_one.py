@@ -1,18 +1,18 @@
+from collections import defaultdict, deque
 import http.server
-import socketserver
-import time
 import json
 import os
-import urllib.request
-from collections import deque, defaultdict
+import socketserver
+import time
 import urllib.parse
+import urllib.request
 
 PORT = int(os.environ.get("PORT", 8080))
 START_TIME = time.time()
 TOTAL_REQUESTS_COUNT = 0
 REQUEST_TIMESTAMPS = deque()
 WINDOW_SIZE = 1.0
-RECENT_LOGS = deque(maxlen=50) 
+RECENT_LOGS = deque(maxlen=50)
 ip_request_counts = defaultdict(list)
 country_stats = defaultdict(int)
 status_code_stats = defaultdict(int)
@@ -43,45 +43,48 @@ default_settings = {
     "allow_firefox": True,
     "allow_safari": True,
     "allow_edge": True,
-    "allow_bots": False
+    "allow_bots": False,
 }
 
+
 def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                data = json.load(f)
-                for key in default_settings:
-                    if key not in data:
-                        data[key] = default_settings[key]
-                return data
-        except:
-            pass
-    return default_settings.copy()
+  if os.path.exists(SETTINGS_FILE):
+    try:
+      with open(SETTINGS_FILE, "r") as f:
+        data = json.load(f)
+        for key in default_settings:
+          if key not in data:
+            data[key] = default_settings[key]
+        return data
+    except:
+      pass
+  return default_settings.copy()
+
 
 def save_settings():
-    try:
-        data = {
-            "maintenance": MAINTENANCE_MODE,
-            "autoban": AUTO_BAN_ENABLED,
-            "max_ip_req": MAX_REQUESTS_PER_IP,
-            "ban_duration": BAN_DURATION,
-            "server_limit": SERVER_LIMIT,
-            "throttle_delay": THROTTLE_DELAY,
-            "banned_ips": list(BANNED_IPS),
-            "whitelisted_ips": list(WHITELISTED_IPS),
-            "allow_desktop": ALLOW_DESKTOP,
-            "allow_mobile": ALLOW_MOBILE,
-            "allow_chrome": ALLOW_CHROME,
-            "allow_firefox": ALLOW_FIREFOX,
-            "allow_safari": ALLOW_SAFARI,
-            "allow_edge": ALLOW_EDGE,
-            "allow_bots": ALLOW_BOTS
-        }
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except:
-        pass
+  try:
+    data = {
+        "maintenance": MAINTENANCE_MODE,
+        "autoban": AUTO_BAN_ENABLED,
+        "max_ip_req": MAX_REQUESTS_PER_IP,
+        "ban_duration": BAN_DURATION,
+        "server_limit": SERVER_LIMIT,
+        "throttle_delay": THROTTLE_DELAY,
+        "banned_ips": list(BANNED_IPS),
+        "whitelisted_ips": list(WHITELISTED_IPS),
+        "allow_desktop": ALLOW_DESKTOP,
+        "allow_mobile": ALLOW_MOBILE,
+        "allow_chrome": ALLOW_CHROME,
+        "allow_firefox": ALLOW_FIREFOX,
+        "allow_safari": ALLOW_SAFARI,
+        "allow_edge": ALLOW_EDGE,
+        "allow_bots": ALLOW_BOTS,
+    }
+    with open(SETTINGS_FILE, "w") as f:
+      json.dump(data, f, indent=4)
+  except:
+    pass
+
 
 config_data = load_settings()
 MAINTENANCE_MODE = config_data["maintenance"]
@@ -100,105 +103,185 @@ ALLOW_SAFARI = config_data["allow_safari"]
 ALLOW_EDGE = config_data["allow_edge"]
 ALLOW_BOTS = config_data["allow_bots"]
 
+
 def update_traffic_history():
-    global LAST_SEC_TIMESTAMP, CURRENT_SEC_COUNT
-    now_sec = int(time.time())
-    if now_sec > LAST_SEC_TIMESTAMP:
-        diff = now_sec - LAST_SEC_TIMESTAMP
-        if diff >= 30:
-            TRAFFIC_HISTORY.clear()
-            for _ in range(30):
-                TRAFFIC_HISTORY.append(0)
-        else:
-            for _ in range(diff - 1):
-                TRAFFIC_HISTORY.append(0)
-            TRAFFIC_HISTORY.append(CURRENT_SEC_COUNT)
-        CURRENT_SEC_COUNT = 0
-        LAST_SEC_TIMESTAMP = now_sec
-    CURRENT_SEC_COUNT += 1
+  global LAST_SEC_TIMESTAMP, CURRENT_SEC_COUNT
+  now_sec = int(time.time())
+  if now_sec > LAST_SEC_TIMESTAMP:
+    diff = now_sec - LAST_SEC_TIMESTAMP
+    if diff >= 30:
+      TRAFFIC_HISTORY.clear()
+      for _ in range(30):
+        TRAFFIC_HISTORY.append(0)
+    else:
+      for _ in range(diff - 1):
+        TRAFFIC_HISTORY.append(0)
+      TRAFFIC_HISTORY.append(CURRENT_SEC_COUNT)
+    CURRENT_SEC_COUNT = 0
+    LAST_SEC_TIMESTAMP = now_sec
+  CURRENT_SEC_COUNT += 1
+
 
 def get_geoip_and_country(ip):
-    if ip in ["127.0.0.1", "localhost", "::1"] or ip.startswith("192.168.") or ip.startswith("10."):
-        return "Lokales Netzwerk", "Lokaler Server"
-    if ip in GEO_CACHE:
-        return GEO_CACHE[ip]
-    try:
-        url = f"http://ip-api.com/json/{ip}?fields=status,country,city"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=1.0) as response:
-            data = json.loads(response.read().decode())
-            if data.get("status") == "success":
-                country = data.get('country', 'Unbekannt')
-                city = data.get('city', 'Unbekannt')
-                loc = f"{country} / {city}"
-                GEO_CACHE[ip] = (loc, country)
-                return loc, country
-    except:
-        pass
-    return "Standort unbekannt", "Unbekannt"
+  if (
+      ip in ["127.0.0.1", "localhost", "::1"]
+      or ip.startswith("192.168.")
+      or ip.startswith("10.")
+  ):
+    return "Lokales Netzwerk", "Lokaler Server"
+  if ip in GEO_CACHE:
+    return GEO_CACHE[ip]
+  try:
+    url = f"http://ip-api.com/json/{ip}?fields=status,country,city"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=1.0) as response:
+      data = json.loads(response.read().decode())
+      if data.get("status") == "success":
+        country = data.get("country", "Unbekannt")
+        city = data.get("city", "Unbekannt")
+        loc = f"{country} / {city}"
+        GEO_CACHE[ip] = (loc, country)
+        return loc, country
+  except:
+    pass
+  return "Standort unbekannt", "Unbekannt"
+
 
 def parse_user_agent(ua_string):
-    ua = ua_string.lower()
-    if "mobile" in ua or "android" in ua or "iphone" in ua:
-        device = "📱 Handy"
-    elif "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "baidu" in ua or "python" in ua or "curl" in ua:
-        device = "🤖 Bot"
-    else:
-        device = "💻 Desktop"
-    
-    if "chrome" in ua and "edge" not in ua and "opr" not in ua: browser = "Chrome"
-    elif "firefox" in ua: browser = "Firefox"
-    elif "safari" in ua and "chrome" not in ua: browser = "Safari"
-    elif "edge" in ua: browser = "Edge"
-    elif "bot" in ua or "crawler" in ua or "python" in ua or "curl" in ua: browser = "Bot/Crawler"
-    else: browser = "Web-Client"
-    
-    return f"{device} ({browser})"
+  ua = ua_string.lower()
+  if "mobile" in ua or "android" in ua or "iphone" in ua:
+    device = "📱 Handy"
+  elif (
+      "bot" in ua
+      or "crawler" in ua
+      or "spider" in ua
+      or "slurp" in ua
+      or "baidu" in ua
+      or "python" in ua
+      or "curl" in ua
+  ):
+    device = "🤖 Bot"
+  else:
+    device = "💻 Desktop"
+
+  if "chrome" in ua and "edge" not in ua and "opr" not in ua:
+    browser = "Chrome"
+  elif "firefox" in ua:
+    browser = "Firefox"
+  elif "safari" in ua and "chrome" not in ua:
+    browser = "Safari"
+  elif "edge" in ua:
+    browser = "Edge"
+  elif (
+      "bot" in ua
+      or "crawler" in ua
+      or "python" in ua
+      or "curl" in ua
+      or "requests" in ua
+  ):
+    browser = "Bot/Crawler"
+  else:
+    browser = "Web-Client"
+
+  return f"{device} ({browser})"
+
+
+def analyze_client_detailed(headers):
+  """Ermittelt präzise Browser, Gerät, ob es ein Bot/getarntes Skript ist
+
+  und gibt den passenden Log-Status-Text zurück.
+  """
+  ua_string = headers.get("User-Agent", "")
+  ua = ua_string.lower()
+
+  # 1. Bekannte Bibliotheken / Tools
+  script_signatures = [
+      "python",
+      "requests",
+      "urllib",
+      "curl",
+      "wget",
+      "postman",
+      "axios",
+      "java/",
+      "libwww",
+  ]
+  is_known_script = any(sig in ua for sig in script_signatures)
+
+  # 2. Crawler / Bots
+  is_bot_keyword = (
+      "bot" in ua
+      or "crawler" in ua
+      or "spider" in ua
+      or "slurp" in ua
+      or "ia_archiver" in ua
+  )
+
+  # 3. Anti-Spoofing (Getarnte Skripte)
+  has_sec_headers = "sec-fetch-dest" in headers or "sec-ch-ua" in headers
+  is_spoofed = (
+      not is_known_script
+      and not is_bot_keyword
+      and not has_sec_headers
+      and ("chrome" in ua or "safari" in ua)
+      and "mobile" not in ua
+  )
+
+  # Browser-Bestimmung
+  if "chrome" in ua and "edge" not in ua and "opr" not in ua:
+    browser = "Google Chrome"
+  elif "firefox" in ua:
+    browser = "Mozilla Firefox"
+  elif "safari" in ua and "chrome" not in ua:
+    browser = "Apple Safari"
+  elif "edge" in ua:
+    browser = "Microsoft Edge"
+  else:
+    browser = "Bot / Skript"
+
+  # Geräte-Bestimmung
+  device = "Mobile" if ("mobile" in ua or "android" in ua or "iphone" in ua) else "Desktop"
+
+  # Ist es final ein Bot oder getarnt?
+  is_bot_or_script = is_known_script or is_bot_keyword or is_spoofed
+
+  if is_bot_or_script:
+    status_msg = (
+        f"🤖 Bot erkannt {'(Getarnt/Spoofed)' if is_spoofed else ''}"
+    )
+  else:
+    status_msg = f"Erlaubt ({device} - {browser})"
+
+  return browser, device, is_bot_or_script, status_msg
+
 
 def is_client_allowed(headers):
-    ua_string = headers.get("User-Agent", "")
-    ua = ua_string.lower()
-    
-    # 1. Bekannte Skripte & Programmierbibliotheken sofort erkennen (Anti-Spoofing)
-    script_signatures = ["python", "requests", "urllib", "curl", "wget", "postman", "axios", "java/", "libwww"]
-    if any(sig in ua for sig in script_signatures):
-        return ALLOW_BOTS
+  ua_string = headers.get("User-Agent", "")
+  ua = ua_string.lower()
 
-    # 2. Erkennung echter Bots / Crawler
-    is_bot = "bot" in ua or "crawler" in ua or "spider" in ua or "slurp" in ua or "ia_archiver" in ua
-    if is_bot:
-        return ALLOW_BOTS
+  browser, device, is_bot_or_script, _ = analyze_client_detailed(headers)
 
-    # 3. Erweiterte Browser-Tarnungsprüfung (Spoofing-Erkennung)
-    # Echte moderne Browser senden fast immer 'sec-ch-ua' oder 'sec-fetch-dest'. 
-    # Einfache Bots, die nur "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36" faken, vergessen diese oft.
-    has_sec_headers = "sec-fetch-dest" in headers or "sec-ch-ua" in headers
-    
-    # Wenn der User-Agent vorgibt Chrome/Safari zu sein, aber gar keine modernen Browser-Header mitschickt -> Verdacht auf Bot!
-    if not has_sec_headers and ("chrome" in ua or "safari" in ua) and not "mobile" in ua:
-        # Strengere Prüfung: Wenn kein Bot erlaubt ist, blockieren wir diesen Fake-Browser
-        if not ALLOW_BOTS:
-            return False
+  if is_bot_or_script:
+    return ALLOW_BOTS
 
-    # 4. Gerät-Prüfung
-    is_mobile = "mobile" in ua or "android" in ua or "iphone" in ua
-    if is_mobile and not ALLOW_MOBILE:
-        return False
-    if not is_mobile and not ALLOW_DESKTOP:
-        return False
+  # Geräte-Prüfung
+  if device == "Mobile" and not ALLOW_MOBILE:
+    return False
+  if device == "Desktop" and not ALLOW_DESKTOP:
+    return False
 
-    # 5. Browser-Prüfung
-    is_chrome = "chrome" in ua and "edge" not in ua and "opr" not in ua
-    is_firefox = "firefox" in ua
-    is_safari = "safari" in ua and "chrome" not in ua
-    is_edge = "edge" in ua
+  # Browser-Prüfung
+  if browser == "Google Chrome" and not ALLOW_CHROME:
+    return False
+  if browser == "Mozilla Firefox" and not ALLOW_FIREFOX:
+    return False
+  if browser == "Apple Safari" and not ALLOW_SAFARI:
+    return False
+  if browser == "Microsoft Edge" and not ALLOW_EDGE:
+    return False
 
-    if is_chrome and not ALLOW_CHROME: return False
-    if is_firefox and not ALLOW_FIREFOX: return False
-    if is_safari and not ALLOW_SAFARI: return False
-    if is_edge and not ALLOW_EDGE: return False
+  return True
 
-    return True
 
 OVERLOAD_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -491,10 +574,10 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
 
             <!-- TAB 1: LIVE-LOGS -->
             <div class="tab-content __CONTENT_LOGS_ACTIVE__">
-                <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Echte Live-Anfragen mit IP-Adressen:</div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Echte Live-Anfragen mit Live-Browser & Bot-Status:</div>
                 <div style="max-height: 300px; overflow-y: auto;">
                     <table>
-                        <tr><th>Zeit</th><th>IP-Adresse</th><th>Standort</th><th>Pfad</th><th>Gerät</th></tr>
+                        <tr><th>Zeit</th><th>IP</th><th>Pfad</th><th>Browser / Bot Status</th></tr>
                         __LOGS_TABLE__
                     </table>
                 </div>
@@ -523,7 +606,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                             <label class="checkbox-label"><input type="checkbox" name="allow_firefox" __CHECKED_FIREFOX__> Mozilla Firefox</label>
                             <label class="checkbox-label"><input type="checkbox" name="allow_safari" __CHECKED_SAFARI__> Apple Safari</label>
                             <label class="checkbox-label"><input type="checkbox" name="allow_edge" __CHECKED_EDGE__> Microsoft Edge</label>
-                            <label class="checkbox-label" style="grid-column: span 2; border-color: rgba(239,68,68,0.4);"><input type="checkbox" name="allow_bots" __CHECKED_BOTS__> Bots / Crawler zulassen</label>
+                            <label class="checkbox-label" style="grid-column: span 2; border-color: rgba(239,68,68,0.4);"><input type="checkbox" name="allow_bots" __CHECKED_BOTS__> Bots / Crawler zulassen (Anti-Spoofing)</label>
                         </div>
                     </div>
 
@@ -630,421 +713,485 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
+
 class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
-    def get_client_ip(self):
-        xff = self.headers.get("X-Forwarded-For")
-        if xff:
-            return xff.split(",")[0].strip()
-        return self.client_address[0]
 
-    def do_HEAD(self):
-        self.do_GET()
+  def get_client_ip(self):
+    xff = self.headers.get("X-Forwarded-For")
+    if xff:
+      return xff.split(",")[0].strip()
+    return self.client_address[0]
 
-    def do_GET(self):
-        global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT, TEMPORARY_BANS
-        
-        client_ip = self.get_client_ip()
-        now = time.time()
-        
-        expired_ips = [ip for ip, exp in TEMPORARY_BANS.items() if now > exp]
-        for ip in expired_ips:
-            del TEMPORARY_BANS[ip]
+  def do_HEAD(self):
+    self.do_GET()
 
-        parsed_path = urllib.parse.urlparse(self.path)
-        path = parsed_path.path
-        query_params = urllib.parse.parse_qs(parsed_path.query)
+  def do_GET(self):
+    global TOTAL_REQUESTS_COUNT, PEAK_RPS, MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT, TEMPORARY_BANS
 
-        is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
-        ua_string = self.headers.get("User-Agent", "Unknown")
+    client_ip = self.get_client_ip()
+    now = time.time()
 
-        # Bot- und erweiterte Filterprüfung (außer für Admin / API)
-        if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
-            if not is_client_allowed(self.headers):
-                status_code_stats[403] += 1
-                self.send_error(403, "Access Denied - Advanced Client / Bot Filtered")
-                return
+    expired_ips = [ip for ip, exp in TEMPORARY_BANS.items() if now > exp]
+    for ip in expired_ips:
+      del TEMPORARY_BANS[ip]
 
-        REQUEST_TIMESTAMPS.append(now)
-        while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
-            REQUEST_TIMESTAMPS.popleft()
-        current_rps = len(REQUEST_TIMESTAMPS)
-        if current_rps > PEAK_RPS:
-            PEAK_RPS = current_rps
+    parsed_path = urllib.parse.urlparse(self.path)
+    path = parsed_path.path
+    query_params = urllib.parse.parse_qs(parsed_path.query)
 
-        if not is_api_or_admin and current_rps > SERVER_LIMIT and client_ip not in WHITELISTED_IPS:
-            status_code_stats[503] += 1
-            self.send_response(503)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-            self.end_headers()
-            if self.command != "HEAD":
-                self.wfile.write(OVERLOAD_HTML.encode("utf-8"))
-            return
+    is_api_or_admin = path.startswith("/api/") or path.startswith("/admin")
+    ua_string = self.headers.get("User-Agent", "Unknown")
 
-        if client_ip not in WHITELISTED_IPS:
-            if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
-                status_code_stats[403] += 1
-                self.send_error(403, "Access Denied - Banned / Rate Limited")
-                return
+    # Bot- und erweiterte Filterprüfung (außer für Admin / API)
+    if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
+      if not is_client_allowed(self.headers):
+        status_code_stats[403] += 1
+        self.send_error(403, "Access Denied - Advanced Client / Bot Filtered")
+        return
 
-        if client_ip not in WHITELISTED_IPS:
-            timestamps = ip_request_counts[client_ip]
-            timestamps[:] = [t for t in timestamps if t > now - 1.0]
-            timestamps.append(now)
-            
-            if len(timestamps) > MAX_REQUESTS_PER_IP:
-                if AUTO_BAN_ENABLED:
-                    TEMPORARY_BANS[client_ip] = now + BAN_DURATION
-                status_code_stats[403] += 1
-                self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
-                return
+    REQUEST_TIMESTAMPS.append(now)
+    while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
+      REQUEST_TIMESTAMPS.popleft()
+    current_rps = len(REQUEST_TIMESTAMPS)
+    if current_rps > PEAK_RPS:
+      PEAK_RPS = current_rps
 
-        TOTAL_REQUESTS_COUNT += 1
-        update_traffic_history()
+    if (
+        not is_api_or_admin
+        and current_rps > SERVER_LIMIT
+        and client_ip not in WHITELISTED_IPS
+    ):
+      status_code_stats[503] += 1
+      self.send_response(503)
+      self.send_header("Content-type", "text/html; charset=utf-8")
+      self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+      self.end_headers()
+      if self.command != "HEAD":
+        self.wfile.write(OVERLOAD_HTML.encode("utf-8"))
+      return
 
-        if path == "/api/stats":
-            data = {
-                "total": TOTAL_REQUESTS_COUNT,
-                "rps": current_rps,
-                "peak": PEAK_RPS,
-                "history": list(TRAFFIC_HISTORY)
-            }
-            self.send_response(200)
-            self.send_header("Content-type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-            self.end_headers()
-            if self.command != "HEAD":
-                self.wfile.write(json.dumps(data).encode("utf-8"))
-            return
+    if client_ip not in WHITELISTED_IPS:
+      if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
+        status_code_stats[403] += 1
+        self.send_error(403, "Access Denied - Banned / Rate Limited")
+        return
 
-        if path == "/api/admin-data":
-            cookie = self.headers.get("Cookie", "")
-            if f"session={ADMIN_PASSWORD}" in cookie:
-                temp_bans_list = []
-                for ip, exp_time in list(TEMPORARY_BANS.items()):
-                    remaining = max(0, int(exp_time - time.time()))
-                    temp_bans_list.append({"ip": ip, "remaining": remaining})
+    if client_ip not in WHITELISTED_IPS:
+      timestamps = ip_request_counts[client_ip]
+      timestamps[:] = [t for t in timestamps if t > now - 1.0]
+      timestamps.append(now)
 
-                admin_data = {
-                    "stat_200": status_code_stats[200],
-                    "stat_403": status_code_stats[403],
-                    "stat_503": status_code_stats[503],
-                    "current_rps": current_rps,
-                    "peak_rps": PEAK_RPS,
-                    "active_ips": len(ip_request_counts),
-                    "temp_bans": temp_bans_list
-                }
-                self.send_response(200)
-                self.send_header("Content-type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-                self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(json.dumps(admin_data).encode("utf-8"))
-                return
-            else:
-                self.send_response(401)
-                self.end_headers()
-                return
+      if len(timestamps) > MAX_REQUESTS_PER_IP:
+        if AUTO_BAN_ENABLED:
+          TEMPORARY_BANS[client_ip] = now + BAN_DURATION
+        status_code_stats[403] += 1
+        self.send_error(403, "Rate Limit Exceeded - Temporary Ban")
+        return
 
-        if path == "/":
-            if MAINTENANCE_MODE:
-                self.send_response(503)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
-                return
+    TOTAL_REQUESTS_COUNT += 1
+    update_traffic_history()
 
-            self.send_response(200)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-            self.end_headers()
+    if path == "/api/stats":
+      data = {
+          "total": TOTAL_REQUESTS_COUNT,
+          "rps": current_rps,
+          "peak": PEAK_RPS,
+          "history": list(TRAFFIC_HISTORY),
+      }
+      self.send_response(200)
+      self.send_header("Content-type", "application/json; charset=utf-8")
+      self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+      self.end_headers()
+      if self.command != "HEAD":
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+      return
 
-            if self.command == "HEAD":
-                return
+    if path == "/api/admin-data":
+      cookie = self.headers.get("Cookie", "")
+      if f"session={ADMIN_PASSWORD}" in cookie:
+        temp_bans_list = []
+        for ip, exp_time in list(TEMPORARY_BANS.items()):
+          remaining = max(0, int(exp_time - time.time()))
+          temp_bans_list.append({"ip": ip, "remaining": remaining})
 
-            max_val = max(TRAFFIC_HISTORY) if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0 else 5
-            chart_html = ""
-            for val in TRAFFIC_HISTORY:
-                height_px = int((val / max_val) * 70)
-                if height_px < 4: 
-                    height_px = 4
-                chart_html += f'<div class="bar" style="height: {height_px}px;" title="{val} Anfragen"></div>'
-
-            page = PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))\
-                              .replace("__CURRENT_RPS__", str(current_rps))\
-                              .replace("__PEAK_RPS__", str(PEAK_RPS))\
-                              .replace("__CHART_BARS__", chart_html)
-            self.wfile.write(page.encode("utf-8"))
-            return
-
-        if path == "/admin/logout":
-            self.send_response(303)
-            self.send_header('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
-            self.send_header('Location', '/admin')
-            self.end_headers()
-            return
-
-        if path == "/admin":
-            cookie = self.headers.get("Cookie", "")
-            if f"session={ADMIN_PASSWORD}" in cookie:
-                if not query_params.get("tab"):
-                    self.send_response(303)
-                    self.send_header('Location', '/admin?tab=logs')
-                    self.end_headers()
-                    return
-
-                self.send_response(200)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                
-                if self.command == "HEAD":
-                    return
-
-                active_tab = query_params.get("tab", ["logs"])[0]
-                
-                tabs = ["logs", "geo", "security", "status"]
-                tab_replacements = {}
-                for t in tabs:
-                    is_active = (t == active_tab)
-                    tab_replacements[f"__TAB_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
-                    tab_replacements[f"__CONTENT_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
-
-                tab_replacements["__TAB_SEC_BTN_ACTIVE__"] = "active" if active_tab == "security" else ""
-
-                logs_html = ""
-                for l in RECENT_LOGS:
-                    logs_html += f"<tr><td>{l['time']}</td><td>{l['real_ip']}</td><td>{l['geo']}</td><td>{l['path']}</td><td>{l['ua']}</td></tr>"
-                if not logs_html:
-                    logs_html = "<tr><td colspan='5'>Noch keine Logs vorhanden.</td></tr>"
-                
-                geo_html = ""
-                sorted_geo = sorted(country_stats.items(), key=lambda x: x[1], reverse=True)
-                for country, count in sorted_geo:
-                    geo_html += f"<tr><td>🌍 {country}</td><td>{count} Aufrufe</td></tr>"
-                if not geo_html:
-                    geo_html = "<tr><td colspan='2'>Noch keine Daten vorhanden.</td></tr>"
-
-                banned_html = ""
-                for ip in BANNED_IPS:
-                    banned_html += f'<div class="ip-row"><span>{ip}</span><a href="/admin/unban-ip?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
-                if not banned_html:
-                    banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine permanenten Bans.</div>'
-
-                temp_banned_html = ""
-                for ip, exp_time in list(TEMPORARY_BANS.items()):
-                    remaining = max(0, int(exp_time - time.time()))
-                    temp_banned_html += f'<div class="ip-row"><span>{ip} <small style="color:var(--warning);">({remaining}s übrig)</small></span><a href="/admin/unban-temp?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
-                if not temp_banned_html:
-                    temp_banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine aktiven temporären Bans.</div>'
-
-                whitelist_html = ""
-                for ip in WHITELISTED_IPS:
-                    whitelist_html += f'<div class="ip-row"><span>{ip}</span>'
-                    if ip not in ["127.0.0.1", "::1"]:
-                        whitelist_html += f'<a href="/admin/unremove-wl?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Entfernen</a>'
-                    else:
-                        whitelist_html += '<span style="font-size:10px; color:var(--text-muted);">System</span>'
-                    whitelist_html += '</div>'
-                if not whitelist_html:
-                    whitelist_html = '<div style="color:var(--text-muted); font-size:11px;">Keine whitelisted IPs.</div>'
-
-                maint_text = "AN" if MAINTENANCE_MODE else "AUS"
-                maint_btn_class = "btn-warning" if MAINTENANCE_MODE else "btn-primary"
-                
-                autoban_text = "AN" if AUTO_BAN_ENABLED else "AUS"
-                autoban_btn_class = "btn-primary" if AUTO_BAN_ENABLED else "btn-danger"
-
-                page = ADMIN_PANEL_HTML
-                for k, v in tab_replacements.items():
-                    page = page.replace(k, v)
-
-                page = page.replace("__LOGS_TABLE__", logs_html)\
-                           .replace("__GEO_TABLE__", geo_html)\
-                           .replace("__BANNED_LIST__", banned_html)\
-                           .replace("__TEMP_BANNED_LIST__", temp_banned_html)\
-                           .replace("__WHITELIST_LIST__", whitelist_html)\
-                           .replace("__MAINT_TEXT__", maint_text)\
-                           .replace("__MAINT_BTN_CLASS__", maint_btn_class)\
-                           .replace("__AUTOBAN_TEXT__", autoban_text)\
-                           .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)\
-                           .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))\
-                           .replace("__BAN_DURATION__", str(BAN_DURATION))\
-                           .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))\
-                           .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))\
-                           .replace("__STAT_200__", str(status_code_stats[200]))\
-                           .replace("__STAT_403__", str(status_code_stats[403]))\
-                           .replace("__STAT_503__", str(status_code_stats[503]))\
-                           .replace("__CURRENT_RPS__", str(current_rps))\
-                           .replace("__PEAK_RPS__", str(PEAK_RPS))\
-                           .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))\
-                           .replace("__CHECKED_DESKTOP__", "checked" if ALLOW_DESKTOP else "")\
-                           .replace("__CHECKED_MOBILE__", "checked" if ALLOW_MOBILE else "")\
-                           .replace("__CHECKED_CHROME__", "checked" if ALLOW_CHROME else "")\
-                           .replace("__CHECKED_FIREFOX__", "checked" if ALLOW_FIREFOX else "")\
-                           .replace("__CHECKED_SAFARI__", "checked" if ALLOW_SAFARI else "")\
-                           .replace("__CHECKED_EDGE__", "checked" if ALLOW_EDGE else "")\
-                           .replace("__CHECKED_BOTS__", "checked" if ALLOW_BOTS else "")
-
-                self.wfile.write(page.encode("utf-8"))
-                return
-            else:
-                self.send_response(200)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
-                return
-
-        if path == "/admin/unban-ip":
-            cookie = self.headers.get("Cookie", "")
-            if f"session={ADMIN_PASSWORD}" in cookie:
-                ip_to_unban = query_params.get("ip", [""])[0]
-                if ip_to_unban in BANNED_IPS:
-                    BANNED_IPS.remove(ip_to_unban)
-                    save_settings()
-                self.send_response(303)
-                self.send_header('Location', '/admin?tab=security')
-                self.end_headers()
-                return
-
-        if path == "/admin/unban-temp":
-            cookie = self.headers.get("Cookie", "")
-            if f"session={ADMIN_PASSWORD}" in cookie:
-                ip_to_unban = query_params.get("ip", [""])[0]
-                if ip_to_unban in TEMPORARY_BANS:
-                    del TEMPORARY_BANS[ip_to_unban]
-                self.send_response(303)
-                self.send_header('Location', '/admin?tab=security')
-                self.end_headers()
-                return
-
-        if path == "/admin/unremove-wl":
-            cookie = self.headers.get("Cookie", "")
-            if f"session={ADMIN_PASSWORD}" in cookie:
-                ip_to_wl = query_params.get("ip", [""])[0]
-                if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in ["127.0.0.1", "::1"]:
-                    WHITELISTED_IPS.remove(ip_to_wl)
-                    save_settings()
-                self.send_response(303)
-                self.send_header('Location', '/admin?tab=security')
-                self.end_headers()
-                return
-
-        if MAINTENANCE_MODE:
-            self.send_response(503)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.end_headers()
-            if self.command != "HEAD":
-                self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
-            return
-
-        geo_loc, country = get_geoip_and_country(client_ip)
-        country_stats[country] += 1
-        status_code_stats[200] += 1
-        
-        parsed_ua = parse_user_agent(ua_string)
-        
-        log_entry = {
-            "path": path,
-            "ua": parsed_ua,
-            "real_ip": client_ip,
-            "geo": geo_loc,
-            "time": time.strftime("%H:%M:%S", time.localtime())
+        admin_data = {
+            "stat_200": status_code_stats[200],
+            "stat_403": status_code_stats[403],
+            "stat_503": status_code_stats[503],
+            "current_rps": current_rps,
+            "peak_rps": PEAK_RPS,
+            "active_ips": len(ip_request_counts),
+            "temp_bans": temp_bans_list,
         }
-        RECENT_LOGS.appendleft(log_entry)
+        self.send_response(200)
+        self.send_header("Content-type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.end_headers()
+        if self.command != "HEAD":
+          self.wfile.write(json.dumps(admin_data).encode("utf-8"))
+        return
+      else:
+        self.send_response(401)
+        self.end_headers()
+        return
+
+    if path == "/":
+      if MAINTENANCE_MODE:
+        self.send_response(503)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        if self.command != "HEAD":
+          self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
+        return
+
+      self.send_response(200)
+      self.send_header("Content-type", "text/html; charset=utf-8")
+      self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+      self.end_headers()
+
+      if self.command == "HEAD":
+        return
+
+      max_val = (
+          max(TRAFFIC_HISTORY)
+          if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0
+          else 5
+      )
+      chart_html = ""
+      for val in TRAFFIC_HISTORY:
+        height_px = int((val / max_val) * 70)
+        if height_px < 4:
+          height_px = 4
+        chart_html += (
+            f'<div class="bar" style="height: {height_px}px;" title="{val}'
+            ' Anfragen"></div>'
+        )
+
+      page = (
+          PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))
+          .replace("__CURRENT_RPS__", str(current_rps))
+          .replace("__PEAK_RPS__", str(PEAK_RPS))
+          .replace("__CHART_BARS__", chart_html)
+      )
+      self.wfile.write(page.encode("utf-8"))
+      return
+
+    if path == "/admin/logout":
+      self.send_response(303)
+      self.send_header(
+          "Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+      )
+      self.send_header("Location", "/admin")
+      self.end_headers()
+      return
+
+    if path == "/admin":
+      cookie = self.headers.get("Cookie", "")
+      if f"session={ADMIN_PASSWORD}" in cookie:
+        if not query_params.get("tab"):
+          self.send_response(303)
+          self.send_header("Location", "/admin?tab=logs")
+          self.end_headers()
+          return
 
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
-        
+
         if self.command == "HEAD":
-            return
+          return
 
-        self.wfile.write(PUBLIC_HTML.encode("utf-8"))
+        active_tab = query_params.get("tab", ["logs"])[0]
 
-    def do_POST(self):
-        global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT
-        global ALLOW_DESKTOP, ALLOW_MOBILE, ALLOW_CHROME, ALLOW_FIREFOX, ALLOW_SAFARI, ALLOW_EDGE, ALLOW_BOTS
-        
-        parsed_path = urllib.parse.urlparse(self.path)
-        path = parsed_path.path
+        tabs = ["logs", "geo", "security", "status"]
+        tab_replacements = {}
+        for t in tabs:
+          is_active = t == active_tab
+          tab_replacements[f"__TAB_{t.upper()}_ACTIVE__"] = (
+              "active" if is_active else ""
+          )
+          tab_replacements[f"__CONTENT_{t.upper()}_ACTIVE__"] = (
+              "active" if is_active else ""
+          )
 
-        if path == "/admin/login":
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(post_data)
-            password = params.get('password', [''])[0]
+        tab_replacements["__TAB_SEC_BTN_ACTIVE__"] = (
+            "active" if active_tab == "security" else ""
+        )
 
-            if password == ADMIN_PASSWORD:
-                self.send_response(303)
-                self.send_header('Set-Cookie', f'session={ADMIN_PASSWORD}; Path=/')
-                self.send_header('Location', '/admin?tab=logs')
-                self.end_headers()
-            else:
-                self.send_response(401)
-                self.end_headers()
-                self.wfile.write(b"Falsches Passwort!")
-            return
+        logs_html = ""
+        for l in RECENT_LOGS:
+          logs_html += (
+              f"<tr><td>{l['time']}</td><td>{l['real_ip']}</td><td>{l['path']}</td><td>{l['ua']}</td></tr>"
+          )
+        if not logs_html:
+          logs_html = "<tr><td colspan='4'>Noch keine Logs vorhanden.</td></tr>"
 
-        cookie = self.headers.get("Cookie", "")
-        if f"session={ADMIN_PASSWORD}" in cookie:
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(post_data)
+        geo_html = ""
+        sorted_geo = sorted(
+            country_stats.items(), key=lambda x: x[1], reverse=True
+        )
+        for country, count in sorted_geo:
+          geo_html += f"<tr><td>🌍 {country}</td><td>{count} Aufrufe</td></tr>"
+        if not geo_html:
+          geo_html = (
+              "<tr><td colspan='2'>Noch keine Daten vorhanden.</td></tr>"
+          )
 
-            if path == "/admin/update-settings":
-                ip_ban = params.get("ip_to_ban", [""])[0].strip()
-                if ip_ban:
-                    BANNED_IPS.add(ip_ban)
-                
-                ip_wl = params.get("ip_to_wl", [""])[0].strip()
-                if ip_wl:
-                    WHITELISTED_IPS.add(ip_wl)
+        banned_html = ""
+        for ip in BANNED_IPS:
+          banned_html += (
+              f'<div class="ip-row"><span>{ip}</span><a'
+              f' href="/admin/unban-ip?ip={ip}" class="btn btn-danger"'
+              ' style="padding:2px 8px; font-size:10px;'
+              ' text-decoration:none;">Freigeben</a></div>'
+          )
+        if not banned_html:
+          banned_html = (
+              '<div style="color:var(--text-muted); font-size:11px;">Keine'
+              " permanenten Bans.</div>"
+          )
 
-                if "toggle_maint" in params:
-                    MAINTENANCE_MODE = not MAINTENANCE_MODE
-                if "toggle_autoban" in params:
-                    AUTO_BAN_ENABLED = not AUTO_BAN_ENABLED
+        temp_banned_html = ""
+        for ip, exp_time in list(TEMPORARY_BANS.items()):
+          remaining = max(0, int(exp_time - time.time()))
+          temp_banned_html += (
+              f'<div class="ip-row"><span>{ip} <small'
+              f' style="color:var(--warning);">({remaining}s übrig)</small></span><a'
+              f' href="/admin/unban-temp?ip={ip}" class="btn btn-danger"'
+              ' style="padding:2px 8px; font-size:10px;'
+              ' text-decoration:none;">Freigeben</a></div>'
+          )
+        if not temp_banned_html:
+          temp_banned_html = (
+              '<div style="color:var(--text-muted); font-size:11px;">Keine'
+              " aktiven temporären Bans.</div>"
+          )
 
-                ALLOW_DESKTOP = "allow_desktop" in params
-                ALLOW_MOBILE = "allow_mobile" in params
-                ALLOW_CHROME = "allow_chrome" in params
-                ALLOW_FIREFOX = "allow_firefox" in params
-                ALLOW_SAFARI = "allow_safari" in params
-                ALLOW_EDGE = "allow_edge" in params
-                ALLOW_BOTS = "allow_bots" in params
+        whitelist_html = ""
+        for ip in WHITELISTED_IPS:
+          whitelist_html += f'<div class="ip-row"><span>{ip}</span>'
+          if ip not in ["127.0.0.1", "::1"]:
+            whitelist_html += (
+                f'<a href="/admin/unremove-wl?ip={ip}" class="btn btn-danger"'
+                ' style="padding:2px 8px; font-size:10px;'
+                ' text-decoration:none;">Entfernen</a>'
+            )
+          else:
+            whitelist_html += (
+                '<span style="font-size:10px;'
+                ' color:var(--text-muted);">System</span>'
+            )
+          whitelist_html += "</div>"
+        if not whitelist_html:
+          whitelist_html = (
+              '<div style="color:var(--text-muted); font-size:11px;">Keine'
+              " whitelisted IPs.</div>"
+          )
 
-                try:
-                    if "max_ip_req" in params:
-                        MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
-                    if "ban_duration" in params:
-                        BAN_DURATION = int(params["ban_duration"][0])
-                    if "throttle_delay" in params:
-                        THROTTLE_DELAY = float(params["throttle_delay"][0])
-                    if "server_limit" in params:
-                        SERVER_LIMIT = int(params["server_limit"][0])
-                except:
-                    pass
-                save_settings()
+        maint_text = "AN" if MAINTENANCE_MODE else "AUS"
+        maint_btn_class = "btn-warning" if MAINTENANCE_MODE else "btn-primary"
 
+        autoban_text = "AN" if AUTO_BAN_ENABLED else "AUS"
+        autoban_btn_class = "btn-primary" if AUTO_BAN_ENABLED else "btn-danger"
+
+        page = ADMIN_PANEL_HTML
+        for k, v in tab_replacements.items():
+          page = page.replace(k, v)
+
+        page = (
+            page.replace("__LOGS_TABLE__", logs_html)
+            .replace("__GEO_TABLE__", geo_html)
+            .replace("__BANNED_LIST__", banned_html)
+            .replace("__TEMP_BANNED_LIST__", temp_banned_html)
+            .replace("__WHITELIST_LIST__", whitelist_html)
+            .replace("__MAINT_TEXT__", maint_text)
+            .replace("__MAINT_BTN_CLASS__", maint_btn_class)
+            .replace("__AUTOBAN_TEXT__", autoban_text)
+            .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)
+            .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))
+            .replace("__BAN_DURATION__", str(BAN_DURATION))
+            .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))
+            .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))
+            .replace("__STAT_200__", str(status_code_stats[200]))
+            .replace("__STAT_403__", str(status_code_stats[403]))
+            .replace("__STAT_503__", str(status_code_stats[503]))
+            .replace("__CURRENT_RPS__", str(current_rps))
+            .replace("__PEAK_RPS__", str(PEAK_RPS))
+            .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))
+            .replace("__CHECKED_DESKTOP__", "checked" if ALLOW_DESKTOP else "")
+            .replace("__CHECKED_MOBILE__", "checked" if ALLOW_MOBILE else "")
+            .replace("__CHECKED_CHROME__", "checked" if ALLOW_CHROME else "")
+            .replace("__CHECKED_FIREFOX__", "checked" if ALLOW_FIREFOX else "")
+            .replace("__CHECKED_SAFARI__", "checked" if ALLOW_SAFARI else "")
+            .replace("__CHECKED_EDGE__", "checked" if ALLOW_EDGE else "")
+            .replace("__CHECKED_BOTS__", "checked" if ALLOW_BOTS else "")
+        )
+
+        self.wfile.write(page.encode("utf-8"))
+        return
+      else:
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        if self.command != "HEAD":
+          self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
+        return
+
+        if path == "/admin/unban-ip":
+          cookie = self.headers.get("Cookie", "")
+          if f"session={ADMIN_PASSWORD}" in cookie:
+            ip_to_unban = query_params.get("ip", [""])[0]
+            if ip_to_unban in BANNED_IPS:
+              BANNED_IPS.remove(ip_to_unban)
+              save_settings()
             self.send_response(303)
-            self.send_header('Location', '/admin?tab=security')
+            self.send_header("Location", "/admin?tab=security")
             self.end_headers()
             return
 
-        self.send_response(404)
-        self.end_headers()
+        if path == "/admin/unban-temp":
+          cookie = self.headers.get("Cookie", "")
+          if f"session={ADMIN_PASSWORD}" in cookie:
+            ip_to_unban = query_params.get("ip", [""])[0]
+            if ip_to_unban in TEMPORARY_BANS:
+              del TEMPORARY_BANS[ip_to_unban]
+            self.send_response(303)
+            self.send_header("Location", "/admin?tab=security")
+            self.end_headers()
+            return
 
-    def log_message(self, format, *args):
-        pass
+        if path == "/admin/unremove-wl":
+          cookie = self.headers.get("Cookie", "")
+          if f"session={ADMIN_PASSWORD}" in cookie:
+            ip_to_wl = query_params.get("ip", [""])[0]
+            if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in [
+                "127.0.0.1",
+                "::1",
+            ]:
+              WHITELISTED_IPS.remove(ip_to_wl)
+              save_settings()
+            self.send_response(303)
+            self.send_header("Location", "/admin?tab=security")
+            self.end_headers()
+            return
+
+    if MAINTENANCE_MODE:
+      self.send_response(503)
+      self.send_header("Content-type", "text/html; charset=utf-8")
+      self.end_headers()
+      if self.command != "HEAD":
+        self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
+      return
+
+    geo_loc, country = get_geoip_and_country(client_ip)
+    country_stats[country] += 1
+    status_code_stats[200] += 1
+
+    # Hier wird der Client im Detail analysiert und der Status für das Log generiert
+    _, _, _, status_msg = analyze_client_detailed(self.headers)
+
+    log_entry = {
+        "path": path,
+        "ua": status_msg,  # Zeigt nun direkt an, ob Bot, getarnt oder welcher Browser genutzt wird!
+        "real_ip": client_ip,
+        "geo": geo_loc,
+        "time": time.strftime("%H:%M:%S", time.localtime()),
+    }
+    RECENT_LOGS.appendleft(log_entry)
+
+    self.send_response(200)
+    self.send_header("Content-type", "text/html; charset=utf-8")
+    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+    self.end_headers()
+
+    if self.command == "HEAD":
+      return
+
+    self.wfile.write(PUBLIC_HTML.encode("utf-8"))
+
+  def do_POST(self):
+    global MAINTENANCE_MODE, AUTO_BAN_ENABLED, MAX_REQUESTS_PER_IP, BAN_DURATION, THROTTLE_DELAY, SERVER_LIMIT
+    global ALLOW_DESKTOP, ALLOW_MOBILE, ALLOW_CHROME, ALLOW_FIREFOX, ALLOW_SAFARI, ALLOW_EDGE, ALLOW_BOTS
+
+    parsed_path = urllib.parse.urlparse(self.path)
+    path = parsed_path.path
+
+    if path == "/admin/login":
+      content_length = int(self.headers.get("Content-Length", 0))
+      post_data = self.rfile.read(content_length).decode("utf-8")
+      params = urllib.parse.parse_qs(post_data)
+      password = params.get("password", [""])[0]
+
+      if password == ADMIN_PASSWORD:
+        self.send_response(303)
+        self.send_header("Set-Cookie", f"session={ADMIN_PASSWORD}; Path=/")
+        self.send_header("Location", "/admin?tab=logs")
+        self.end_headers()
+      else:
+        self.send_response(401)
+        self.end_headers()
+        self.wfile.write(b"Falsches Passwort!")
+      return
+
+    cookie = self.headers.get("Cookie", "")
+    if f"session={ADMIN_PASSWORD}" in cookie:
+      content_length = int(self.headers.get("Content-Length", 0))
+      post_data = self.rfile.read(content_length).decode("utf-8")
+      params = urllib.parse.parse_qs(post_data)
+
+      if path == "/admin/update-settings":
+        ip_ban = params.get("ip_to_ban", [""])[0].strip()
+        if ip_ban:
+          BANNED_IPS.add(ip_ban)
+
+        ip_wl = params.get("ip_to_wl", [""])[0].strip()
+        if ip_wl:
+          WHITELISTED_IPS.add(ip_wl)
+
+        if "toggle_maint" in params:
+          MAINTENANCE_MODE = not MAINTENANCE_MODE
+        if "toggle_autoban" in params:
+          AUTO_BAN_ENABLED = not AUTO_BAN_ENABLED
+
+        ALLOW_DESKTOP = "allow_desktop" in params
+        ALLOW_MOBILE = "allow_mobile" in params
+        ALLOW_CHROME = "allow_chrome" in params
+        ALLOW_FIREFOX = "allow_firefox" in params
+        ALLOW_SAFARI = "allow_safari" in params
+        ALLOW_EDGE = "allow_edge" in params
+        ALLOW_BOTS = "allow_bots" in params
+
+        try:
+          if "max_ip_req" in params:
+            MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
+          if "ban_duration" in params:
+            BAN_DURATION = int(params["ban_duration"][0])
+          if "throttle_delay" in params:
+            THROTTLE_DELAY = float(params["throttle_delay"][0])
+          if "server_limit" in params:
+            SERVER_LIMIT = int(params["server_limit"][0])
+        except:
+          pass
+        save_settings()
+
+      self.send_response(303)
+      self.send_header("Location", "/admin?tab=security")
+      self.end_headers()
+      return
+
+    self.send_response(404)
+    self.end_headers()
+
+  def log_message(self, format, *args):
+    pass
+
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
+  allow_reuse_address = True
+
 
 if __name__ == "__main__":
-    with ThreadedHTTPServer(("", PORT), FastTrafficHandler) as httpd:
-        print(f"High-Performance Threaded Server läuft auf Port {PORT}")
-        httpd.serve_forever()
+  with ThreadedHTTPServer(("", PORT), FastTrafficHandler) as httpd:
+    print(f"High-Performance Threaded Server läuft auf Port {PORT}")
+    httpd.serve_forever()
 

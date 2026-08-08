@@ -11,6 +11,7 @@ PORT = int(os.environ.get("PORT", 8080))
 START_TIME = time.time()
 TOTAL_REQUESTS_COUNT = 0
 REQUEST_TIMESTAMPS = deque()
+ADMIN_REQUEST_TIMESTAMPS = deque()
 WINDOW_SIZE = 1.0
 RECENT_LOGS = deque(maxlen=50)
 ip_request_counts = defaultdict(list)
@@ -19,7 +20,6 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-# Traffic-Historie auf 60 Sekunden erweitert
 TRAFFIC_HISTORY = deque([(0, 0, 0)] * 60, maxlen=60)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_SUCCESS = 0
@@ -410,11 +410,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
                     
-                    if (data.history && Array.isArray(data.history)) {
+                    if (data.history && Array.isArray(data.history) && data.history.length > 0) {
                         latestHistoryData = data.history;
                         const allVals = [];
                         latestHistoryData.forEach(item => {
-                            allVals.push(item[0], item[1], item[2]);
+                            if (Array.isArray(item)) {
+                                allVals.push(item[0] || 0, item[1] || 0, item[2] || 0);
+                            }
                         });
                         
                         const maxVal = allVals.length > 0 ? Math.max(...allVals, 5) : 5;
@@ -431,9 +433,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
 
                         latestHistoryData.forEach((item, index) => {
                             const x = index * step;
-                            const ySucc = height - Math.min(height, (item[0] / maxVal) * height);
-                            const yBlocked = height - Math.min(height, (item[1] / maxVal) * height);
-                            const yOver = height - Math.min(height, (item[2] / maxVal) * height);
+                            const succVal = (item && item[0]) ? item[0] : 0;
+                            const blockVal = (item && item[1]) ? item[1] : 0;
+                            const overVal = (item && item[2]) ? item[2] : 0;
+
+                            const ySucc = height - Math.min(height, (succVal / maxVal) * height);
+                            const yBlocked = height - Math.min(height, (blockVal / maxVal) * height);
+                            const yOver = height - Math.min(height, (overVal / maxVal) * height);
 
                             ptsSucc.push(`${x.toFixed(1)},${ySucc.toFixed(1)}`);
                             ptsBlocked.push(`${x.toFixed(1)},${yBlocked.toFixed(1)}`);
@@ -454,11 +460,9 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 });
         }
         
-        // Intervall auf 1 Sekunde erhöht, um Überlastung/Rate-Limits im Browser zu verhindern
         setInterval(updateStats, 1000);
         updateStats();
 
-        // Interaktives Anklicken des Diagramms
         document.getElementById('chart-click-area').addEventListener('click', function(e) {
             if(!latestHistoryData || latestHistoryData.length === 0) return;
             const rect = this.getBoundingClientRect();
@@ -467,13 +471,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
             
             const index = Math.round(percentage * (latestHistoryData.length - 1));
             if(index >= 0 && index < latestHistoryData.length) {
-                const item = latestHistoryData[index];
+                const item = latestHistoryData[index] || [0,0,0];
                 const secondsAgo = latestHistoryData.length - 1 - index;
                 const popup = document.getElementById('info-popup');
                 const popupText = document.getElementById('popup-text');
                 
                 popup.style.display = 'flex';
-                popupText.innerHTML = `Vor <b>${secondsAgo}s</b>: <span style="color:var(--success);">Erlaubt: ${item[0]}</span> | <span style="color:var(--danger);">Geboesst/Geglockt: ${item[1]}</span> | <span style="color:var(--warning);">Überlastet: ${item[2]}</span>`;
+                popupText.innerHTML = `Vor <b>${secondsAgo}s</b>: <span style="color:var(--success);">Erlaubt: ${item[0] || 0}</span> | <span style="color:var(--danger);">Geboesst/Geglockt: ${item[1] || 0}</span> | <span style="color:var(--warning);">Überlastet: ${item[2] || 0}</span>`;
             }
         });
     </script>
@@ -736,7 +740,9 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     <div class="stat-card"><div class="lbl">503</div><div class="val" style="color:var(--warning);" id="stat-503">__STAT_503__</div></div>
                 </div>
                 <div style="font-size: 13px; margin-bottom: 10px; font-weight: bold;">Server-Echtzeit Status:</div>
-                <div class="ip-row"><span>Aktuelle RPS</span><span style="color:var(--primary);" id="curr-rps-val">__CURRENT_RPS__</span></div>
+                <div class="ip-row"><span>Aktuelle RPS (Gesamt)</span><span style="color:var(--primary);" id="curr-rps-val">__CURRENT_RPS__</span></div>
+                <div class="ip-row"><span>Blocked RPS (403 / Sek.)</span><span style="color:var(--danger);" id="curr-blocked-val">__CURRENT_BLOCKED_RPS__</span></div>
+                <div class="ip-row"><span>Überlastet RPS (503 / Sek.)</span><span style="color:var(--warning);" id="curr-overload-val">__CURRENT_OVERLOAD_RPS__</span></div>
                 <div class="ip-row"><span>Peak RPS</span><span style="color:var(--primary);" id="peak-rps-val">__PEAK_RPS__</span></div>
                 <div class="ip-row"><span>Aktive IP-Tracker</span><span style="color:var(--primary);" id="active-ips-val">__ACTIVE_IPS__</span></div>
             </div>
@@ -758,6 +764,8 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                     if(document.getElementById('stat-403')) document.getElementById('stat-403').innerText = data.stat_403;
                     if(document.getElementById('stat-503')) document.getElementById('stat-503').innerText = data.stat_503;
                     if(document.getElementById('curr-rps-val')) document.getElementById('curr-rps-val').innerText = data.current_rps;
+                    if(document.getElementById('curr-blocked-val')) document.getElementById('curr-blocked-val').innerText = data.current_blocked_rps;
+                    if(document.getElementById('curr-overload-val')) document.getElementById('curr-overload-val').innerText = data.current_overload_rps;
                     if(document.getElementById('peak-rps-val')) document.getElementById('peak-rps-val').innerText = data.peak_rps;
                     if(document.getElementById('active-ips-val')) document.getElementById('active-ips-val').innerText = data.active_ips;
 
@@ -807,7 +815,11 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     path = parsed_path.path
     query_params = urllib.parse.parse_qs(parsed_path.query)
 
-    # API-Statistiken ganz am Anfang abfangen (DDoS-resistent)
+    cookie = self.headers.get("Cookie", "")
+    is_authenticated_admin = f"session={ADMIN_PASSWORD}" in cookie
+    is_admin_route = path.startswith("/admin") or path == "/api/admin-data"
+
+    # API-Statistiken für die Startseite abfangen
     if path == "/api/stats":
       REQUEST_TIMESTAMPS.append(now)
       while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
@@ -829,6 +841,190 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       if self.command != "HEAD":
         self.wfile.write(json.dumps(data).encode("utf-8"))
       return
+
+    # Admin-Routen und API-Daten vom globalen Server-Limit und Sperren ausnehmen (DDoS-Resistenz für den Admin)
+    if is_admin_route:
+      if path == "/api/admin-data":
+        if is_authenticated_admin:
+          temp_bans_list = []
+          for ip, exp_time in list(TEMPORARY_BANS.items()):
+            remaining = max(0, int(exp_time - time.time()))
+            temp_bans_list.append({"ip": ip, "remaining": remaining})
+
+          admin_data = {
+              "stat_200": status_code_stats[200],
+              "stat_403": status_code_stats[403],
+              "stat_503": status_code_stats[503],
+              "current_rps": len(REQUEST_TIMESTAMPS),
+              "current_blocked_rps": CURRENT_SEC_BLOCKED,
+              "current_overload_rps": CURRENT_SEC_OVERLOAD,
+              "peak_rps": PEAK_RPS,
+              "active_ips": len(ip_request_counts),
+              "temp_bans": temp_bans_list,
+          }
+          self.send_response(200)
+          self.send_header("Content-type", "application/json; charset=utf-8")
+          self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+          self.end_headers()
+          if self.command != "HEAD":
+            self.wfile.write(json.dumps(admin_data).encode("utf-8"))
+          return
+        else:
+          self.send_response(401)
+          self.end_headers()
+          return
+
+      # Admin HTML Panel / Login Verteilung
+      if path == "/admin/logout":
+        self.send_response(303)
+        self.send_header("Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+        self.send_header("Location", "/admin")
+        self.end_headers()
+        return
+
+      if path == "/admin/unban-ip":
+        if is_authenticated_admin:
+          ip_to_unban = query_params.get("ip", [""])[0]
+          if ip_to_unban in BANNED_IPS:
+            BANNED_IPS.remove(ip_to_unban)
+            save_settings()
+          self.send_response(303)
+          self.send_header("Location", "/admin?tab=security")
+          self.end_headers()
+          return
+
+      if path == "/admin/unban-temp":
+        if is_authenticated_admin:
+          ip_to_unban = query_params.get("ip", [""])[0]
+          if ip_to_unban in TEMPORARY_BANS:
+            del TEMPORARY_BANS[ip_to_unban]
+          self.send_response(303)
+          self.send_header("Location", "/admin?tab=security")
+          self.end_headers()
+          return
+
+      if path == "/admin/unremove-wl":
+        if is_authenticated_admin:
+          ip_to_wl = query_params.get("ip", [""])[0]
+          if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in ["127.0.0.1", "::1"]:
+            WHITELISTED_IPS.remove(ip_to_wl)
+            save_settings()
+          self.send_response(303)
+          self.send_header("Location", "/admin?tab=security")
+          self.end_headers()
+          return
+
+      if path == "/admin":
+        if is_authenticated_admin:
+          if not query_params.get("tab"):
+            self.send_response(303)
+            self.send_header("Location", "/admin?tab=logs")
+            self.end_headers()
+            return
+
+          self.send_response(200)
+          self.send_header("Content-type", "text/html; charset=utf-8")
+          self.end_headers()
+
+          if self.command == "HEAD":
+            return
+
+          active_tab = query_params.get("tab", ["logs"])[0]
+          tabs = ["logs", "geo", "security", "status"]
+          tab_replacements = {}
+          for t in tabs:
+            is_active = t == active_tab
+            tab_replacements[f"__TAB_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
+            tab_replacements[f"__CONTENT_{t.upper()}_ACTIVE__"] = "active" if is_active else ""
+
+          tab_replacements["__TAB_SEC_BTN_ACTIVE__"] = "active" if active_tab == "security" else ""
+
+          logs_html = ""
+          for l in RECENT_LOGS:
+            logs_html += f"<tr><td>{l['time']}</td><td>{l['real_ip']}</td><td>{l['path']}</td><td>{l['ua']}</td></tr>"
+          if not logs_html:
+            logs_html = "<tr><td colspan='4'>Noch keine Logs vorhanden.</td></tr>"
+
+          geo_html = ""
+          sorted_geo = sorted(country_stats.items(), key=lambda x: x[1], reverse=True)
+          for country, count in sorted_geo:
+            geo_html += f"<tr><td>🌍 {country}</td><td>{count} Aufrufe</td></tr>"
+          if not geo_html:
+            geo_html = "<tr><td colspan='2'>Noch keine Daten vorhanden.</td></tr>"
+
+          banned_html = ""
+          for ip in BANNED_IPS:
+            banned_html += f'<div class="ip-row"><span>{ip}</span><a href="/admin/unban-ip?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
+          if not banned_html:
+            banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine permanenten Bans.</div>'
+
+          temp_banned_html = ""
+          for ip, exp_time in list(TEMPORARY_BANS.items()):
+            remaining = max(0, int(exp_time - time.time()))
+            temp_banned_html += f'<div class="ip-row"><span>{ip} <small style="color:var(--warning);">({remaining}s übrig)</small></span><a href="/admin/unban-temp?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Freigeben</a></div>'
+          if not temp_banned_html:
+            temp_banned_html = '<div style="color:var(--text-muted); font-size:11px;">Keine aktiven temporären Bans.</div>'
+
+          whitelist_html = ""
+          for ip in WHITELISTED_IPS:
+            whitelist_html += f'<div class="ip-row"><span>{ip}</span>'
+            if ip not in ["127.0.0.1", "::1"]:
+              whitelist_html += f'<a href="/admin/unremove-wl?ip={ip}" class="btn btn-danger" style="padding:2px 8px; font-size:10px; text-decoration:none;">Entfernen</a>'
+            else:
+              whitelist_html += '<span style="font-size:10px; color:var(--text-muted);">System</span>'
+            whitelist_html += "</div>"
+          if not whitelist_html:
+            whitelist_html = '<div style="color:var(--text-muted); font-size:11px;">Keine whitelisted IPs.</div>'
+
+          maint_text = "AN" if MAINTENANCE_MODE else "AUS"
+          maint_btn_class = "btn-warning" if MAINTENANCE_MODE else "btn-primary"
+          autoban_text = "AN" if AUTO_BAN_ENABLED else "AUS"
+          autoban_btn_class = "btn-primary" if AUTO_BAN_ENABLED else "btn-danger"
+
+          page = ADMIN_PANEL_HTML
+          for k, v in tab_replacements.items():
+            page = page.replace(k, v)
+
+          page = (
+              page.replace("__LOGS_TABLE__", logs_html)
+              .replace("__GEO_TABLE__", geo_html)
+              .replace("__BANNED_LIST__", banned_html)
+              .replace("__TEMP_BANNED_LIST__", temp_banned_html)
+              .replace("__WHITELIST_LIST__", whitelist_html)
+              .replace("__MAINT_TEXT__", maint_text)
+              .replace("__MAINT_BTN_CLASS__", maint_btn_class)
+              .replace("__AUTOBAN_TEXT__", autoban_text)
+              .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)
+              .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))
+              .replace("__BAN_DURATION__", str(BAN_DURATION))
+              .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))
+              .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))
+              .replace("__STAT_200__", str(status_code_stats[200]))
+              .replace("__STAT_403__", str(status_code_stats[403]))
+              .replace("__STAT_503__", str(status_code_stats[503]))
+              .replace("__CURRENT_RPS__", str(len(REQUEST_TIMESTAMPS)))
+              .replace("__CURRENT_BLOCKED_RPS__", str(CURRENT_SEC_BLOCKED))
+              .replace("__CURRENT_OVERLOAD_RPS__", str(CURRENT_SEC_OVERLOAD))
+              .replace("__PEAK_RPS__", str(PEAK_RPS))
+              .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))
+              .replace("__CHECKED_DESKTOP__", "checked" if ALLOW_DESKTOP else "")
+              .replace("__CHECKED_MOBILE__", "checked" if ALLOW_MOBILE else "")
+              .replace("__CHECKED_CHROME__", "checked" if ALLOW_CHROME else "")
+              .replace("__CHECKED_FIREFOX__", "checked" if ALLOW_FIREFOX else "")
+              .replace("__CHECKED_SAFARI__", "checked" if ALLOW_SAFARI else "")
+              .replace("__CHECKED_EDGE__", "checked" if ALLOW_EDGE else "")
+              .replace("__CHECKED_BOTS__", "checked" if ALLOW_BOTS else "")
+          )
+
+          self.wfile.write(page.encode("utf-8"))
+          return
+        else:
+          self.send_response(200)
+          self.send_header("Content-type", "text/html; charset=utf-8")
+          self.end_headers()
+          if self.command != "HEAD":
+            self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
+          return
 
     is_api_or_admin = path.startswith("/api/") or path.startswith("/admin") or path == "/banned-redirect"
 
@@ -874,6 +1070,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     if current_rps > PEAK_RPS:
       PEAK_RPS = current_rps
 
+    # Globaler Schutz gegen Überlastung (mit Puffer, damit Admins/Whitelisted immer rein kommen)
     if (
         not is_api_or_admin
         and current_rps > SERVER_LIMIT
@@ -954,35 +1151,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       self.wfile.write(redirect_page.encode("utf-8"))
       return
 
-    if path == "/api/admin-data":
-      cookie = self.headers.get("Cookie", "")
-      if f"session={ADMIN_PASSWORD}" in cookie:
-        temp_bans_list = []
-        for ip, exp_time in list(TEMPORARY_BANS.items()):
-          remaining = max(0, int(exp_time - time.time()))
-          temp_bans_list.append({"ip": ip, "remaining": remaining})
-
-        admin_data = {
-            "stat_200": status_code_stats[200],
-            "stat_403": status_code_stats[403],
-            "stat_503": status_code_stats[503],
-            "current_rps": current_rps,
-            "peak_rps": PEAK_RPS,
-            "active_ips": len(ip_request_counts),
-            "temp_bans": temp_bans_list,
-        }
-        self.send_response(200)
-        self.send_header("Content-type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.end_headers()
-        if self.command != "HEAD":
-          self.wfile.write(json.dumps(admin_data).encode("utf-8"))
-        return
-      else:
-        self.send_response(401)
-        self.end_headers()
-        return
-
     if path == "/":
       if MAINTENANCE_MODE:
         status_code_stats[503] += 1
@@ -1014,202 +1182,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       )
       self.wfile.write(page.encode("utf-8"))
       return
-
-    if path == "/admin/logout":
-      self.send_response(303)
-      self.send_header(
-          "Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
-      )
-      self.send_header("Location", "/admin")
-      self.end_headers()
-      return
-
-    if path == "/admin":
-      cookie = self.headers.get("Cookie", "")
-      if f"session={ADMIN_PASSWORD}" in cookie:
-        if not query_params.get("tab"):
-          self.send_response(303)
-          self.send_header("Location", "/admin?tab=logs")
-          self.end_headers()
-          return
-
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-
-        if self.command == "HEAD":
-          return
-
-        active_tab = query_params.get("tab", ["logs"])[0]
-
-        tabs = ["logs", "geo", "security", "status"]
-        tab_replacements = {}
-        for t in tabs:
-          is_active = t == active_tab
-          tab_replacements[f"__TAB_{t.upper()}_ACTIVE__"] = (
-              "active" if is_active else ""
-          )
-          tab_replacements[f"__CONTENT_{t.upper()}_ACTIVE__"] = (
-              "active" if is_active else ""
-          )
-
-        tab_replacements["__TAB_SEC_BTN_ACTIVE__"] = (
-            "active" if active_tab == "security" else ""
-        )
-
-        logs_html = ""
-        for l in RECENT_LOGS:
-          logs_html += (
-              f"<tr><td>{l['time']}</td><td>{l['real_ip']}</td><td>{l['path']}</td><td>{l['ua']}</td></tr>"
-          )
-        if not logs_html:
-          logs_html = "<tr><td colspan='4'>Noch keine Logs vorhanden.</td></tr>"
-
-        geo_html = ""
-        sorted_geo = sorted(
-            country_stats.items(), key=lambda x: x[1], reverse=True
-        )
-        for country, count in sorted_geo:
-          geo_html += f"<tr><td>🌍 {country}</td><td>{count} Aufrufe</td></tr>"
-        if not geo_html:
-          geo_html = (
-              "<tr><td colspan='2'>Noch keine Daten vorhanden.</td></tr>"
-          )
-
-        banned_html = ""
-        for ip in BANNED_IPS:
-          banned_html += (
-              f'<div class="ip-row"><span>{ip}</span><a'
-              f' href="/admin/unban-ip?ip={ip}" class="btn btn-danger"'
-              ' style="padding:2px 8px; font-size:10px;'
-              ' text-decoration:none;">Freigeben</a></div>'
-          )
-        if not banned_html:
-          banned_html = (
-              '<div style="color:var(--text-muted); font-size:11px;">Keine'
-              " permanenten Bans.</div>"
-          )
-
-        temp_banned_html = ""
-        for ip, exp_time in list(TEMPORARY_BANS.items()):
-          remaining = max(0, int(exp_time - time.time()))
-          temp_banned_html += (
-              f'<div class="ip-row"><span>{ip} <small'
-              f' style="color:var(--warning);">({remaining}s übrig)</small></span><a'
-              f' href="/admin/unban-temp?ip={ip}" class="btn btn-danger"'
-              ' style="padding:2px 8px; font-size:10px;'
-              ' text-decoration:none;">Freigeben</a></div>'
-          )
-        if not temp_banned_html:
-          temp_banned_html = (
-              '<div style="color:var(--text-muted); font-size:11px;">Keine'
-              " aktiven temporären Bans.</div>"
-          )
-
-        whitelist_html = ""
-        for ip in WHITELISTED_IPS:
-          whitelist_html += f'<div class="ip-row"><span>{ip}</span>'
-          if ip not in ["127.0.0.1", "::1"]:
-            whitelist_html += (
-                f'<a href="/admin/unremove-wl?ip={ip}" class="btn btn-danger"'
-                ' style="padding:2px 8px; font-size:10px;'
-                ' text-decoration:none;">Entfernen</a>'
-            )
-          else:
-            whitelist_html += (
-                '<span style="font-size:10px;'
-                ' color:var(--text-muted);">System</span>'
-            )
-          whitelist_html += "</div>"
-        if not whitelist_html:
-          whitelist_html = (
-              '<div style="color:var(--text-muted); font-size:11px;">Keine'
-              " whitelisted IPs.</div>"
-          )
-
-        maint_text = "AN" if MAINTENANCE_MODE else "AUS"
-        maint_btn_class = "btn-warning" if MAINTENANCE_MODE else "btn-primary"
-
-        autoban_text = "AN" if AUTO_BAN_ENABLED else "AUS"
-        autoban_btn_class = "btn-primary" if AUTO_BAN_ENABLED else "btn-danger"
-
-        page = ADMIN_PANEL_HTML
-        for k, v in tab_replacements.items():
-          page = page.replace(k, v)
-
-        page = (
-            page.replace("__LOGS_TABLE__", logs_html)
-            .replace("__GEO_TABLE__", geo_html)
-            .replace("__BANNED_LIST__", banned_html)
-            .replace("__TEMP_BANNED_LIST__", temp_banned_html)
-            .replace("__WHITELIST_LIST__", whitelist_html)
-            .replace("__MAINT_TEXT__", maint_text)
-            .replace("__MAINT_BTN_CLASS__", maint_btn_class)
-            .replace("__AUTOBAN_TEXT__", autoban_text)
-            .replace("__AUTOBAN_BTN_CLASS__", autoban_btn_class)
-            .replace("__MAX_IP_REQ__", str(MAX_REQUESTS_PER_IP))
-            .replace("__BAN_DURATION__", str(BAN_DURATION))
-            .replace("__THROTTLE_DELAY__", str(THROTTLE_DELAY))
-            .replace("__SERVER_LIMIT__", str(SERVER_LIMIT))
-            .replace("__STAT_200__", str(status_code_stats[200]))
-            .replace("__STAT_403__", str(status_code_stats[403]))
-            .replace("__STAT_503__", str(status_code_stats[503]))
-            .replace("__CURRENT_RPS__", str(current_rps))
-            .replace("__PEAK_RPS__", str(PEAK_RPS))
-            .replace("__ACTIVE_IPS__", str(len(ip_request_counts)))
-            .replace("__CHECKED_DESKTOP__", "checked" if ALLOW_DESKTOP else "")
-            .replace("__CHECKED_MOBILE__", "checked" if ALLOW_MOBILE else "")
-            .replace("__CHECKED_CHROME__", "checked" if ALLOW_CHROME else "")
-            .replace("__CHECKED_FIREFOX__", "checked" if ALLOW_FIREFOX else "")
-            .replace("__CHECKED_SAFARI__", "checked" if ALLOW_SAFARI else "")
-            .replace("__CHECKED_EDGE__", "checked" if ALLOW_EDGE else "")
-            .replace("__CHECKED_BOTS__", "checked" if ALLOW_BOTS else "")
-        )
-
-        self.wfile.write(page.encode("utf-8"))
-        return
-      else:
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        if self.command != "HEAD":
-          self.wfile.write(ADMIN_LOGIN_HTML.encode("utf-8"))
-        return
-
-    if path == "/admin/unban-ip":
-      cookie = self.headers.get("Cookie", "")
-      if f"session={ADMIN_PASSWORD}" in cookie:
-        ip_to_unban = query_params.get("ip", [""])[0]
-        if ip_to_unban in BANNED_IPS:
-          BANNED_IPS.remove(ip_to_unban)
-          save_settings()
-        self.send_response(303)
-        self.send_header("Location", "/admin?tab=security")
-        self.end_headers()
-        return
-
-    if path == "/admin/unban-temp":
-      cookie = self.headers.get("Cookie", "")
-      if f"session={ADMIN_PASSWORD}" in cookie:
-        ip_to_unban = query_params.get("ip", [""])[0]
-        if ip_to_unban in TEMPORARY_BANS:
-          del TEMPORARY_BANS[ip_to_unban]
-        self.send_response(303)
-        self.send_header("Location", "/admin?tab=security")
-        self.end_headers()
-        return
-
-    if path == "/admin/unremove-wl":
-      cookie = self.headers.get("Cookie", "")
-      if f"session={ADMIN_PASSWORD}" in cookie:
-        ip_to_wl = query_params.get("ip", [""])[0]
-        if ip_to_wl in WHITELISTED_IPS and ip_to_wl not in ["127.0.0.1", "::1"]:
-          WHITELISTED_IPS.remove(ip_to_wl)
-          save_settings()
-        self.send_response(303)
-        self.send_header("Location", "/admin?tab=security")
-        self.end_headers()
-        return
 
     if MAINTENANCE_MODE:
       status_code_stats[503] += 1
@@ -1295,5 +1267,23 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         try:
           if "max_ip_req" in params:
             MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
-          ...
+          if "ban_duration" in params:
+            BAN_DURATION = int(params["ban_duration"][0])
+          if "throttle_delay" in params:
+            THROTTLE_DELAY = float(params["throttle_delay"][0])
+          if "server_limit" in params:
+            SERVER_LIMIT = int(params["server_limit"][0])
+        except:
+          pass
+
+        save_settings()
+        self.send_response(303)
+        self.send_header("Location", "/admin?tab=security")
+        self.end_headers()
+        return
+
+if __name__ == "__main__":
+  with socketserver.TCPServer(("0.0.0.0", PORT), FastTrafficHandler) as httpd:
+    print(f"Server läuft auf Port {PORT}")
+    httpd.serve_forever()
 

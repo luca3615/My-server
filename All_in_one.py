@@ -19,7 +19,7 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-# Traffic-Historie auf 60 Sekunden erweitert (60 Tupel für jeweils 1 Sekunde)
+# Traffic-Historie auf 60 Sekunden erweitert
 TRAFFIC_HISTORY = deque([(0, 0, 0)] * 60, maxlen=60)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_SUCCESS = 0
@@ -324,12 +324,16 @@ PUBLIC_HTML = """<!DOCTYPE html>
         
         .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 12px; height: 110px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
-        .chart-container { flex: 1; position: relative; height: 90px; border-left: 1px dashed var(--border); }
+        .chart-container { flex: 1; position: relative; height: 90px; border-left: 1px dashed var(--border); cursor: pointer; }
         
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
         .legend { display: flex; gap: 15px; font-size: 11px; color: var(--text-muted); margin-bottom: 15px; justify-content: center; }
         .legend-item { display: flex; align-items: center; gap: 5px; }
         .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+        .info-popup { background: #080d1a; border: 1px solid var(--primary); padding: 12px; border-radius: 10px; font-size: 12px; margin-bottom: 15px; display: none; align-items: center; justify-content: space-between; }
+        .info-popup span { color: var(--text); }
+        .info-popup b { color: var(--primary); }
 
         .admin-link { display: block; text-align: center; background: #1e293b; color: var(--text); padding: 12px; border-radius: 12px; text-decoration: none; font-weight: bold; font-size: 13px; border: 1px solid var(--border); margin-top: 15px; }
         .admin-link:hover { background: #26334d; border-color: var(--primary); }
@@ -348,7 +352,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Traffic Verlauf (letzte 60 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
+            <div class="chart-title"><span>Live Traffic Verlauf (letzte 60 Sek. - Klick auf Diagramm für Details)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
+            
+            <div class="info-popup" id="info-popup">
+                <span id="popup-text">Tippe auf eine Sekunde im Diagramm, um Details anzuzeigen.</span>
+                <button onclick="document.getElementById('info-popup').style.display='none'" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-weight:bold;">✕</button>
+            </div>
+
             <div class="legend">
                 <div class="legend-item"><div class="legend-dot" style="background:var(--success);"></div> Erlaubt (200)</div>
                 <div class="legend-item"><div class="legend-dot" style="background:var(--danger);"></div> Geblockt (403)</div>
@@ -360,7 +370,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     <span id="axis-mid">5</span>
                     <span id="axis-min">0</span>
                 </div>
-                <div class="chart-container">
+                <div class="chart-container" id="chart-click-area">
                     <svg id="line-chart" width="100%" height="100%" viewBox="0 0 600 90" preserveAspectRatio="none">
                         <path id="path-success" fill="none" stroke="#22c55e" stroke-width="2" d="M0,90 L600,90"></path>
                         <path id="path-blocked" fill="none" stroke="#ef4444" stroke-width="2" d="M0,90 L600,90"></path>
@@ -373,6 +383,8 @@ PUBLIC_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
+        let latestHistoryData = [];
+
         function measurePing() {
             const start = performance.now();
             fetch('/api/stats?' + start, { method: 'HEAD', cache: 'no-store' })
@@ -395,9 +407,9 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
                     
-                    const history = data.history; // Array von [succ, block, over]
+                    latestHistoryData = data.history; // Array von [succ, block, over] (60 Einträge)
                     const allVals = [];
-                    history.forEach(item => {
+                    latestHistoryData.forEach(item => {
                         allVals.push(item[0], item[1], item[2]);
                     });
                     
@@ -407,13 +419,13 @@ PUBLIC_HTML = """<!DOCTYPE html>
 
                     const width = 600;
                     const height = 90;
-                    const step = history.length > 1 ? width / (history.length - 1) : width;
+                    const step = latestHistoryData.length > 1 ? width / (latestHistoryData.length - 1) : width;
 
                     let ptsSucc = [];
                     let ptsBlocked = [];
                     let ptsOverload = [];
 
-                    history.forEach((item, index) => {
+                    latestHistoryData.forEach((item, index) => {
                         const x = index * step;
                         const ySucc = height - Math.min(height, (item[0] / maxVal) * height);
                         const yBlocked = height - Math.min(height, (item[1] / maxVal) * height);
@@ -436,9 +448,28 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     document.getElementById('api-status').innerText = '● Verbindung gestört (DDoS?)';
                 });
         }
-        // Aktualisierung alle 0.7 Sekunden (700 Millisekunden)
+        // Auto-Aktualisierung alle 0,7 Sekunden (700ms)
         setInterval(updateStats, 700);
         updateStats();
+
+        // Interaktives Anklicken des Diagramms
+        document.getElementById('chart-click-area').addEventListener('click', function(e) {
+            if(!latestHistoryData || latestHistoryData.length === 0) return;
+            const rect = this.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            
+            const index = Math.round(percentage * (latestHistoryData.length - 1));
+            if(index >= 0 && index < latestHistoryData.length) {
+                const item = latestHistoryData[index];
+                const secondsAgo = latestHistoryData.length - 1 - index;
+                const popup = document.getElementById('info-popup');
+                const popupText = document.getElementById('popup-text');
+                
+                popup.style.display = 'flex';
+                popupText.innerHTML = `Vor <b>${secondsAgo}s</b>: <span style="color:var(--success);">Erlaubt: ${item[0]}</span> | <span style="color:var(--danger);">Geboesst/Geglockt: ${item[1]}</span> | <span style="color:var(--warning);">Überlastet: ${item[2]}</span>`;
+            }
+        });
     </script>
 </body>
 </html>"""
@@ -767,8 +798,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     path = parsed_path.path
     query_params = urllib.parse.parse_qs(parsed_path.query)
 
-    # BEHOBEN: API-Statistiken werden GANZ AM ANFANG abgefangen, 
-    # damit sie selbst bei starkem DDoS / 503 Überlast nicht blockiert werden!
+    # API-Statistiken ganz am Anfang abfangen (DDoS-resistent)
     if path == "/api/stats":
       REQUEST_TIMESTAMPS.append(now)
       while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:

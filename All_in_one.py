@@ -396,60 +396,66 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     document.getElementById('server-ping').innerText = 'Error';
                 });
         }
-        setInterval(measurePing, 800);
+        setInterval(measurePing, 1000);
         measurePing();
 
         function updateStats() {
             fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
-                .then(res => res.json())
+                .then(res => {
+                    if (!res.ok) throw new Error("Netzwerk-Antwort war nicht ok");
+                    return res.json();
+                })
                 .then(data => {
                     document.getElementById('total-req').innerText = data.total;
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
                     
-                    latestHistoryData = data.history; // Array von [succ, block, over] (60 Einträge)
-                    const allVals = [];
-                    latestHistoryData.forEach(item => {
-                        allVals.push(item[0], item[1], item[2]);
-                    });
-                    
-                    const maxVal = allVals.length > 0 ? Math.max(...allVals, 5) : 5;
-                    document.getElementById('axis-max').innerText = maxVal;
-                    document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
+                    if (data.history && Array.isArray(data.history)) {
+                        latestHistoryData = data.history;
+                        const allVals = [];
+                        latestHistoryData.forEach(item => {
+                            allVals.push(item[0], item[1], item[2]);
+                        });
+                        
+                        const maxVal = allVals.length > 0 ? Math.max(...allVals, 5) : 5;
+                        document.getElementById('axis-max').innerText = maxVal;
+                        document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
 
-                    const width = 600;
-                    const height = 90;
-                    const step = latestHistoryData.length > 1 ? width / (latestHistoryData.length - 1) : width;
+                        const width = 600;
+                        const height = 90;
+                        const step = latestHistoryData.length > 1 ? width / (latestHistoryData.length - 1) : width;
 
-                    let ptsSucc = [];
-                    let ptsBlocked = [];
-                    let ptsOverload = [];
+                        let ptsSucc = [];
+                        let ptsBlocked = [];
+                        let ptsOverload = [];
 
-                    latestHistoryData.forEach((item, index) => {
-                        const x = index * step;
-                        const ySucc = height - Math.min(height, (item[0] / maxVal) * height);
-                        const yBlocked = height - Math.min(height, (item[1] / maxVal) * height);
-                        const yOver = height - Math.min(height, (item[2] / maxVal) * height);
+                        latestHistoryData.forEach((item, index) => {
+                            const x = index * step;
+                            const ySucc = height - Math.min(height, (item[0] / maxVal) * height);
+                            const yBlocked = height - Math.min(height, (item[1] / maxVal) * height);
+                            const yOver = height - Math.min(height, (item[2] / maxVal) * height);
 
-                        ptsSucc.push(`${x.toFixed(1)},${ySucc.toFixed(1)}`);
-                        ptsBlocked.push(`${x.toFixed(1)},${yBlocked.toFixed(1)}`);
-                        ptsOverload.push(`${x.toFixed(1)},${yOver.toFixed(1)}`);
-                    });
+                            ptsSucc.push(`${x.toFixed(1)},${ySucc.toFixed(1)}`);
+                            ptsBlocked.push(`${x.toFixed(1)},${yBlocked.toFixed(1)}`);
+                            ptsOverload.push(`${x.toFixed(1)},${yOver.toFixed(1)}`);
+                        });
 
-                    document.getElementById('path-success').setAttribute('d', `M ` + ptsSucc.join(' L '));
-                    document.getElementById('path-blocked').setAttribute('d', `M ` + ptsBlocked.join(' L '));
-                    document.getElementById('path-overload').setAttribute('d', `M ` + ptsOverload.join(' L '));
+                        document.getElementById('path-success').setAttribute('d', `M ` + ptsSucc.join(' L '));
+                        document.getElementById('path-blocked').setAttribute('d', `M ` + ptsBlocked.join(' L '));
+                        document.getElementById('path-overload').setAttribute('d', `M ` + ptsOverload.join(' L '));
+                    }
                     
                     document.getElementById('api-status').style.color = 'var(--success)';
                     document.getElementById('api-status').innerText = '● Verbunden';
                 })
                 .catch(err => {
                     document.getElementById('api-status').style.color = 'var(--danger)';
-                    document.getElementById('api-status').innerText = '● Verbindung gestört (DDoS?)';
+                    document.getElementById('api-status').innerText = '● Verbindung gestört';
                 });
         }
-        // Auto-Aktualisierung alle 0,7 Sekunden (700ms)
-        setInterval(updateStats, 700);
+        
+        // Intervall auf 1 Sekunde erhöht, um Überlastung/Rate-Limits im Browser zu verhindern
+        setInterval(updateStats, 1000);
         updateStats();
 
         // Interaktives Anklicken des Diagramms
@@ -457,7 +463,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
             if(!latestHistoryData || latestHistoryData.length === 0) return;
             const rect = this.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
-            const percentage = clickX / rect.width;
+            const percentage = Math.max(0, Math.min(1, clickX / rect.width));
             
             const index = Math.round(percentage * (latestHistoryData.length - 1));
             if(index >= 0 && index < latestHistoryData.length) {
@@ -743,7 +749,10 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     <script>
         function refreshAdminData() {
             fetch('/api/admin-data', { cache: 'no-store' })
-                .then(res => res.json())
+                .then(res => {
+                    if (!res.ok) throw new Error("Netzwerkfehler");
+                    return res.json();
+                })
                 .then(data => {
                     if(document.getElementById('stat-200')) document.getElementById('stat-200').innerText = data.stat_200;
                     if(document.getElementById('stat-403')) document.getElementById('stat-403').innerText = data.stat_403;
@@ -767,7 +776,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 })
                 .catch(err => {});
         }
-        setInterval(refreshAdminData, 700);
+        setInterval(refreshAdminData, 1000);
     </script>
 </body>
 </html>"""
@@ -1286,34 +1295,5 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         try:
           if "max_ip_req" in params:
             MAX_REQUESTS_PER_IP = int(params["max_ip_req"][0])
-          if "ban_duration" in params:
-            BAN_DURATION = int(params["ban_duration"][0])
-          if "throttle_delay" in params:
-            THROTTLE_DELAY = float(params["throttle_delay"][0])
-          if "server_limit" in params:
-            SERVER_LIMIT = int(params["server_limit"][0])
-        except:
-          pass
-        save_settings()
-
-      self.send_response(303)
-      self.send_header("Location", "/admin?tab=security")
-      self.end_headers()
-      return
-
-    self.send_response(404)
-    self.end_headers()
-
-  def log_message(self, format, *args):
-    pass
-
-
-class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-  allow_reuse_address = True
-
-
-if __name__ == "__main__":
-  with ThreadedHTTPServer(("", PORT), FastTrafficHandler) as httpd:
-    print(f"High-Performance Threaded Server läuft auf Port {PORT}")
-    httpd.serve_forever()
+          ...
 

@@ -19,8 +19,8 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-# Traffic-Historie mit Tupeln für (Erfolgreich, Geblockt, 503)
-TRAFFIC_HISTORY = deque([(0, 0, 0)] * 30, maxlen=30)
+# Traffic-Historie auf 60 Sekunden erweitert (60 Tupel für jeweils 1 Sekunde)
+TRAFFIC_HISTORY = deque([(0, 0, 0)] * 60, maxlen=60)
 LAST_SEC_TIMESTAMP = int(time.time())
 CURRENT_SEC_SUCCESS = 0
 CURRENT_SEC_BLOCKED = 0
@@ -147,9 +147,9 @@ def update_traffic_history(req_type):
   now_sec = int(time.time())
   if now_sec > LAST_SEC_TIMESTAMP:
     diff = now_sec - LAST_SEC_TIMESTAMP
-    if diff >= 30:
+    if diff >= 60:
       TRAFFIC_HISTORY.clear()
-      for _ in range(30):
+      for _ in range(60):
         TRAFFIC_HISTORY.append((0, 0, 0))
     else:
       for _ in range(diff - 1):
@@ -322,16 +322,10 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 12px; height: 100px; }
+        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 12px; height: 110px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
-        .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 6px; position: relative; height: 80px; border-left: 1px dashed var(--border); padding-left: 8px; }
+        .chart-container { flex: 1; position: relative; height: 90px; border-left: 1px dashed var(--border); }
         
-        .bar-group { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; width: 100%; }
-        .bar { width: 100%; border-radius: 2px 2px 0 0; min-height: 0px; transition: height 0.2s ease; }
-        .bar-success { background: var(--success); }
-        .bar-blocked { background: var(--danger); }
-        .bar-overload { background: var(--warning); }
-
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
         .legend { display: flex; gap: 15px; font-size: 11px; color: var(--text-muted); margin-bottom: 15px; justify-content: center; }
         .legend-item { display: flex; align-items: center; gap: 5px; }
@@ -354,11 +348,11 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Traffic Aufteilung (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
+            <div class="chart-title"><span>Live Traffic Verlauf (letzte 60 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
             <div class="legend">
-                <div class="legend-item"><div class="legend-dot" style="background:var(--success);"></div> Erlaubt</div>
-                <div class="legend-item"><div class="legend-dot" style="background:var(--danger);"></div> Geblockt</div>
-                <div class="legend-item"><div class="legend-dot" style="background:var(--warning);"></div> 503 Überlast</div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--success);"></div> Erlaubt (200)</div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--danger);"></div> Geblockt (403)</div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--warning);"></div> Überlastet (503)</div>
             </div>
             <div class="chart-wrapper">
                 <div class="chart-axis" id="chart-axis">
@@ -366,8 +360,12 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     <span id="axis-mid">5</span>
                     <span id="axis-min">0</span>
                 </div>
-                <div class="chart-container" id="chart">
-                    __CHART_BARS__
+                <div class="chart-container">
+                    <svg id="line-chart" width="100%" height="100%" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <path id="path-success" fill="none" stroke="#22c55e" stroke-width="2" d="M0,90 L600,90"></path>
+                        <path id="path-blocked" fill="none" stroke="#ef4444" stroke-width="2" d="M0,90 L600,90"></path>
+                        <path id="path-overload" fill="none" stroke="#f59e0b" stroke-width="2" d="M0,90 L600,90"></path>
+                    </svg>
                 </div>
             </div>
 
@@ -397,46 +395,50 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     document.getElementById('current-rps').innerText = data.rps;
                     document.getElementById('peak-rps').innerText = data.peak;
                     
-                    const chart = document.getElementById('chart');
-                    let barsHtml = '';
+                    const history = data.history; // Array von [succ, block, over]
+                    const allVals = [];
+                    history.forEach(item => {
+                        allVals.push(item[0], item[1], item[2]);
+                    });
                     
-                    // Berechne Gesamtsummen pro Sekunde für die Skala
-                    const totals = data.history.map(item => item[0] + item[1] + item[2]);
-                    const maxVal = totals.length > 0 ? Math.max(...totals, 5) : 5;
-                    
+                    const maxVal = allVals.length > 0 ? Math.max(...allVals, 5) : 5;
                     document.getElementById('axis-max').innerText = maxVal;
                     document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
 
-                    data.history.forEach(item => {
-                        const succ = item[0];
-                        const block = item[1];
-                        const over = item[2];
-                        const totalSec = succ + block + over;
+                    const width = 600;
+                    const height = 90;
+                    const step = history.length > 1 ? width / (history.length - 1) : width;
 
-                        let totalHeightPx = Math.round((totalSec / maxVal) * 70);
-                        if (totalHeightPx < 4 && totalSec > 0) totalHeightPx = 4;
-                        
-                        if (totalSec === 0) {
-                            barsHtml += `<div class="bar-group"><div class="bar bar-success" style="height: 4px; opacity: 0.2;" title="0 Anfragen"></div></div>`;
-                        } else {
-                            let hSucc = Math.round((succ / totalSec) * totalHeightPx);
-                            let hBlock = Math.round((block / totalSec) * totalHeightPx);
-                            let hOver = Math.round((over / totalSec) * totalHeightPx);
+                    let ptsSucc = [];
+                    let ptsBlocked = [];
+                    let ptsOverload = [];
 
-                            barsHtml += `<div class="bar-group" title="Erlaubt: ${succ}, Geblockt: ${block}, 503: ${over}">`;
-                            if(hOver > 0) barsHtml += `<div class="bar bar-overload" style="height: ${hOver}px;"></div>`;
-                            if(hBlock > 0) barsHtml += `<div class="bar bar-blocked" style="height: ${hBlock}px;"></div>`;
-                            if(hSucc > 0 || (hSucc === 0 && hBlock === 0 && hOver === 0)) {
-                                barsHtml += `<div class="bar bar-success" style="height: ${Math.max(4, hSucc)}px;"></div>`;
-                            }
-                            barsHtml += `</div>`;
-                        }
+                    history.forEach((item, index) => {
+                        const x = index * step;
+                        const ySucc = height - Math.min(height, (item[0] / maxVal) * height);
+                        const yBlocked = height - Math.min(height, (item[1] / maxVal) * height);
+                        const yOver = height - Math.min(height, (item[2] / maxVal) * height);
+
+                        ptsSucc.push(`${x.toFixed(1)},${ySucc.toFixed(1)}`);
+                        ptsBlocked.push(`${x.toFixed(1)},${yBlocked.toFixed(1)}`);
+                        ptsOverload.push(`${x.toFixed(1)},${yOver.toFixed(1)}`);
                     });
-                    chart.innerHTML = barsHtml;
+
+                    document.getElementById('path-success').setAttribute('d', `M ` + ptsSucc.join(' L '));
+                    document.getElementById('path-blocked').setAttribute('d', `M ` + ptsBlocked.join(' L '));
+                    document.getElementById('path-overload').setAttribute('d', `M ` + ptsOverload.join(' L '));
+                    
+                    document.getElementById('api-status').style.color = 'var(--success)';
+                    document.getElementById('api-status').innerText = '● Verbunden';
                 })
-                .catch(err => {});
+                .catch(err => {
+                    document.getElementById('api-status').style.color = 'var(--danger)';
+                    document.getElementById('api-status').innerText = '● Verbindung gestört (DDoS?)';
+                });
         }
-        setInterval(updateStats, 500);
+        // Aktualisierung alle 0.7 Sekunden (700 Millisekunden)
+        setInterval(updateStats, 700);
+        updateStats();
     </script>
 </body>
 </html>"""
@@ -734,7 +736,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
                 })
                 .catch(err => {});
         }
-        setInterval(refreshAdminData, 500);
+        setInterval(refreshAdminData, 700);
     </script>
 </body>
 </html>"""
@@ -765,6 +767,30 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     path = parsed_path.path
     query_params = urllib.parse.parse_qs(parsed_path.query)
 
+    # BEHOBEN: API-Statistiken werden GANZ AM ANFANG abgefangen, 
+    # damit sie selbst bei starkem DDoS / 503 Überlast nicht blockiert werden!
+    if path == "/api/stats":
+      REQUEST_TIMESTAMPS.append(now)
+      while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < now - WINDOW_SIZE:
+        REQUEST_TIMESTAMPS.popleft()
+      current_rps = len(REQUEST_TIMESTAMPS)
+      if current_rps > PEAK_RPS:
+        PEAK_RPS = current_rps
+
+      data = {
+          "total": TOTAL_REQUESTS_COUNT,
+          "rps": current_rps,
+          "peak": PEAK_RPS,
+          "history": list(TRAFFIC_HISTORY),
+      }
+      self.send_response(200)
+      self.send_header("Content-type", "application/json; charset=utf-8")
+      self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+      self.end_headers()
+      if self.command != "HEAD":
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+      return
+
     is_api_or_admin = path.startswith("/api/") or path.startswith("/admin") or path == "/banned-redirect"
 
     def log_request(status_text):
@@ -780,7 +806,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         }
         RECENT_LOGS.appendleft(log_entry)
 
-    # 1. Blockierung bei unzulässigem Client/Browser-Typ (z.B. Firefox wenn deaktiviert)
+    # Browser-Bann & Umleitung zu Google
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
@@ -889,21 +915,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       self.wfile.write(redirect_page.encode("utf-8"))
       return
 
-    if path == "/api/stats":
-      data = {
-          "total": TOTAL_REQUESTS_COUNT,
-          "rps": current_rps,
-          "peak": PEAK_RPS,
-          "history": list(TRAFFIC_HISTORY),
-      }
-      self.send_response(200)
-      self.send_header("Content-type", "application/json; charset=utf-8")
-      self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-      self.end_headers()
-      if self.command != "HEAD":
-        self.wfile.write(json.dumps(data).encode("utf-8"))
-      return
-
     if path == "/api/admin-data":
       cookie = self.headers.get("Cookie", "")
       if f"session={ADMIN_PASSWORD}" in cookie:
@@ -957,37 +968,10 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       if self.command == "HEAD":
         return
 
-      totals = [item[0] + item[1] + item[2] for item in TRAFFIC_HISTORY]
-      max_val = max(totals) if totals and max(totals) > 0 else 5
-      
-      chart_html = ""
-      for succ, block, over in TRAFFIC_HISTORY:
-        total_sec = succ + block + over
-        total_height_px = int((total_sec / max_val) * 70)
-        if total_height_px < 4 and total_sec > 0:
-          total_height_px = 4
-
-        if total_sec == 0:
-          chart_html += '<div class="bar-group"><div class="bar bar-success" style="height: 4px; opacity: 0.2;"></div></div>'
-        else:
-          h_succ = int((succ / total_sec) * total_height_px)
-          h_block = int((block / total_sec) * total_height_px)
-          h_over = int((over / total_sec) * total_height_px)
-
-          chart_html += f'<div class="bar-group" title="Erlaubt: {succ}, Geblockt: {block}, 503: {over}">'
-          if h_over > 0:
-            chart_html += f'<div class="bar bar-overload" style="height: {h_over}px;"></div>'
-          if h_block > 0:
-            chart_html += f'<div class="bar bar-blocked" style="height: {h_block}px;"></div>'
-          if h_succ > 0 or (h_succ == 0 and h_block == 0 and h_over == 0):
-            chart_html += f'<div class="bar bar-success" style="height: {max(4, h_succ)}px;"></div>'
-          chart_html += '</div>'
-
       page = (
           PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))
           .replace("__CURRENT_RPS__", str(current_rps))
           .replace("__PEAK_RPS__", str(PEAK_RPS))
-          .replace("__CHART_BARS__", chart_html)
       )
       self.wfile.write(page.encode("utf-8"))
       return

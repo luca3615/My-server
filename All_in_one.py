@@ -347,8 +347,8 @@ PUBLIC_HTML = """<!DOCTYPE html>
             
             <div class="stats-grid">
                 <div class="stat-box"><div class="lbl">Aufrufe</div><div class="val" id="total-req">__TOTAL_REQ__</div></div>
-                <div class="stat-box"><div class="lbl">Anfragen/s</div><div class="val" id="current-rps">__CURRENT_RPS__</div></div>
-                <div class="stat-box"><div class="lbl">Peak RPS</div><div class="val" id="peak-rps">__PEAK_RPS__</div></div>
+                <div class="stat-box"><div class="lbl">Live RPS</div><div class="val" id="current-rps">__CURRENT_RPS__</div></div>
+                <div class="stat-box"><div class="lbl" style="color:var(--danger);">Blocked RPS</div><div class="val" id="blocked-rps" style="color:var(--danger);">__BLOCKED_RPS__</div></div>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
@@ -408,7 +408,7 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 .then(data => {
                     document.getElementById('total-req').innerText = data.total;
                     document.getElementById('current-rps').innerText = data.rps;
-                    document.getElementById('peak-rps').innerText = data.peak;
+                    document.getElementById('blocked-rps').innerText = data.blocked_rps;
                     
                     if (data.history && Array.isArray(data.history) && data.history.length > 0) {
                         latestHistoryData = data.history;
@@ -831,6 +831,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       data = {
           "total": TOTAL_REQUESTS_COUNT,
           "rps": current_rps,
+          "blocked_rps": CURRENT_SEC_BLOCKED,
           "peak": PEAK_RPS,
           "history": list(TRAFFIC_HISTORY),
       }
@@ -842,7 +843,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode("utf-8"))
       return
 
-    # Admin-Routen und API-Daten vom globalen Server-Limit und Sperren ausnehmen (DDoS-Resistenz für den Admin)
     if is_admin_route:
       if path == "/api/admin-data":
         if is_authenticated_admin:
@@ -874,7 +874,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
           self.end_headers()
           return
 
-      # Admin HTML Panel / Login Verteilung
       if path == "/admin/logout":
         self.send_response(303)
         self.send_header("Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
@@ -1041,7 +1040,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         }
         RECENT_LOGS.appendleft(log_entry)
 
-    # Browser-Bann & Umleitung zu Google
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
@@ -1070,7 +1068,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     if current_rps > PEAK_RPS:
       PEAK_RPS = current_rps
 
-    # Globaler Schutz gegen Überlastung (mit Puffer, damit Admins/Whitelisted immer rein kommen)
     if (
         not is_api_or_admin
         and current_rps > SERVER_LIMIT
@@ -1178,6 +1175,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       page = (
           PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))
           .replace("__CURRENT_RPS__", str(current_rps))
+          .replace("__BLOCKED_RPS__", str(CURRENT_SEC_BLOCKED))
           .replace("__PEAK_RPS__", str(PEAK_RPS))
       )
       self.wfile.write(page.encode("utf-8"))

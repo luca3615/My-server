@@ -19,9 +19,12 @@ status_code_stats = defaultdict(int)
 PEAK_RPS = 0
 GEO_CACHE = {}
 
-TRAFFIC_HISTORY = deque([0] * 30, maxlen=30)
+# Traffic-Historie mit Tupeln für (Erfolgreich, Geblockt, 503)
+TRAFFIC_HISTORY = deque([(0, 0, 0)] * 30, maxlen=30)
 LAST_SEC_TIMESTAMP = int(time.time())
-CURRENT_SEC_COUNT = 0
+CURRENT_SEC_SUCCESS = 0
+CURRENT_SEC_BLOCKED = 0
+CURRENT_SEC_OVERLOAD = 0
 
 SETTINGS_FILE = "database.json"
 ADMIN_PASSWORD = "Luca123"
@@ -139,22 +142,30 @@ def save_settings():
 load_settings()
 
 
-def update_traffic_history():
-  global LAST_SEC_TIMESTAMP, CURRENT_SEC_COUNT
+def update_traffic_history(req_type):
+  global LAST_SEC_TIMESTAMP, CURRENT_SEC_SUCCESS, CURRENT_SEC_BLOCKED, CURRENT_SEC_OVERLOAD
   now_sec = int(time.time())
   if now_sec > LAST_SEC_TIMESTAMP:
     diff = now_sec - LAST_SEC_TIMESTAMP
     if diff >= 30:
       TRAFFIC_HISTORY.clear()
       for _ in range(30):
-        TRAFFIC_HISTORY.append(0)
+        TRAFFIC_HISTORY.append((0, 0, 0))
     else:
       for _ in range(diff - 1):
-        TRAFFIC_HISTORY.append(0)
-      TRAFFIC_HISTORY.append(CURRENT_SEC_COUNT)
-    CURRENT_SEC_COUNT = 0
+        TRAFFIC_HISTORY.append((0, 0, 0))
+      TRAFFIC_HISTORY.append((CURRENT_SEC_SUCCESS, CURRENT_SEC_BLOCKED, CURRENT_SEC_OVERLOAD))
+    CURRENT_SEC_SUCCESS = 0
+    CURRENT_SEC_BLOCKED = 0
+    CURRENT_SEC_OVERLOAD = 0
     LAST_SEC_TIMESTAMP = now_sec
-  CURRENT_SEC_COUNT += 1
+
+  if req_type == "success":
+    CURRENT_SEC_SUCCESS += 1
+  elif req_type == "blocked":
+    CURRENT_SEC_BLOCKED += 1
+  elif req_type == "overload":
+    CURRENT_SEC_OVERLOAD += 1
 
 
 def get_geoip_and_country(ip):
@@ -296,6 +307,8 @@ PUBLIC_HTML = """<!DOCTYPE html>
             --text-muted: #94a3b8;
             --primary: #3b82f6;
             --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
             --accent: #06b6d4;
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; box-sizing: border-box; }
@@ -309,12 +322,21 @@ PUBLIC_HTML = """<!DOCTYPE html>
         .stat-box .val { font-size: 15px; font-weight: bold; color: var(--primary); margin-top: 4px; }
         .stat-box .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
         
-        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 15px; height: 100px; }
+        .chart-wrapper { display: flex; align-items: stretch; background: #080d1a; border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 12px; height: 100px; }
         .chart-axis { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--text-muted); padding-right: 10px; text-align: right; min-width: 28px; user-select: none; }
         .chart-container { flex: 1; display: flex; align-items: flex-end; gap: 6px; position: relative; height: 80px; border-left: 1px dashed var(--border); padding-left: 8px; }
-        .bar { flex: 1; background: var(--primary); border-radius: 3px 3px 0 0; min-height: 4px; width: 100%; transition: height 0.2s ease; }
-        .bar:hover { opacity: 1; background: var(--accent); }
+        
+        .bar-group { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; width: 100%; }
+        .bar { width: 100%; border-radius: 2px 2px 0 0; min-height: 0px; transition: height 0.2s ease; }
+        .bar-success { background: var(--success); }
+        .bar-blocked { background: var(--danger); }
+        .bar-overload { background: var(--warning); }
+
         .chart-title { font-size: 11px; font-weight: bold; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; }
+        .legend { display: flex; gap: 15px; font-size: 11px; color: var(--text-muted); margin-bottom: 15px; justify-content: center; }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
         .admin-link { display: block; text-align: center; background: #1e293b; color: var(--text); padding: 12px; border-radius: 12px; text-decoration: none; font-weight: bold; font-size: 13px; border: 1px solid var(--border); margin-top: 15px; }
         .admin-link:hover { background: #26334d; border-color: var(--primary); }
     </style>
@@ -332,7 +354,12 @@ PUBLIC_HTML = """<!DOCTYPE html>
                 <div class="stat-box"><div class="lbl">Server Ping</div><div class="val" id="server-ping">-- ms</div></div>
             </div>
 
-            <div class="chart-title"><span>Live Anfragen Verlauf (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
+            <div class="chart-title"><span>Live Traffic Aufteilung (letzte 30 Sek.)</span><span id="api-status" style="color:var(--success);">● Verbunden</span></div>
+            <div class="legend">
+                <div class="legend-item"><div class="legend-dot" style="background:var(--success);"></div> Erlaubt</div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--danger);"></div> Geblockt</div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--warning);"></div> 503 Überlast</div>
+            </div>
             <div class="chart-wrapper">
                 <div class="chart-axis" id="chart-axis">
                     <span id="axis-max">10</span>
@@ -372,15 +399,38 @@ PUBLIC_HTML = """<!DOCTYPE html>
                     
                     const chart = document.getElementById('chart');
                     let barsHtml = '';
-                    const maxVal = data.history.length > 0 ? Math.max(...data.history, 5) : 5;
+                    
+                    // Berechne Gesamtsummen pro Sekunde für die Skala
+                    const totals = data.history.map(item => item[0] + item[1] + item[2]);
+                    const maxVal = totals.length > 0 ? Math.max(...totals, 5) : 5;
                     
                     document.getElementById('axis-max').innerText = maxVal;
                     document.getElementById('axis-mid').innerText = Math.round(maxVal / 2);
 
-                    data.history.forEach(val => {
-                        let heightPx = Math.round((val / maxVal) * 70);
-                        if (heightPx < 4) heightPx = 4;
-                        barsHtml += `<div class="bar" style="height: ${heightPx}px;" title="${val} Anfragen"></div>`;
+                    data.history.forEach(item => {
+                        const succ = item[0];
+                        const block = item[1];
+                        const over = item[2];
+                        const totalSec = succ + block + over;
+
+                        let totalHeightPx = Math.round((totalSec / maxVal) * 70);
+                        if (totalHeightPx < 4 && totalSec > 0) totalHeightPx = 4;
+                        
+                        if (totalSec === 0) {
+                            barsHtml += `<div class="bar-group"><div class="bar bar-success" style="height: 4px; opacity: 0.2;" title="0 Anfragen"></div></div>`;
+                        } else {
+                            let hSucc = Math.round((succ / totalSec) * totalHeightPx);
+                            let hBlock = Math.round((block / totalSec) * totalHeightPx);
+                            let hOver = Math.round((over / totalSec) * totalHeightPx);
+
+                            barsHtml += `<div class="bar-group" title="Erlaubt: ${succ}, Geblockt: ${block}, 503: ${over}">`;
+                            if(hOver > 0) barsHtml += `<div class="bar bar-overload" style="height: ${hOver}px;"></div>`;
+                            if(hBlock > 0) barsHtml += `<div class="bar bar-blocked" style="height: ${hBlock}px;"></div>`;
+                            if(hSucc > 0 || (hSucc === 0 && hBlock === 0 && hOver === 0)) {
+                                barsHtml += `<div class="bar bar-success" style="height: ${Math.max(4, hSucc)}px;"></div>`;
+                            }
+                            barsHtml += `</div>`;
+                        }
                     });
                     chart.innerHTML = barsHtml;
                 })
@@ -730,12 +780,13 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         }
         RECENT_LOGS.appendleft(log_entry)
 
-    # 1. Blockierung bei unzulässigem Client/Browser-Typ
+    # 1. Blockierung bei unzulässigem Client/Browser-Typ (z.B. Firefox wenn deaktiviert)
     if not is_api_or_admin and client_ip not in WHITELISTED_IPS:
       if not is_client_allowed(self.headers):
         status_code_stats[403] += 1
+        update_traffic_history("blocked")
         _, _, _, status_msg = analyze_client_detailed(self.headers)
-        log_request(f"❌ Blockiert: {status_msg}")
+        log_request(f"❌ Blockiert (Browser/Gerät): {status_msg}")
         self.send_response(303)
         self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
         self.end_headers()
@@ -744,7 +795,8 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       geo_loc, country = get_geoip_and_country(client_ip)
       if country in ["Unbekannt", "Standort unbekannt", "Lokales Netzwerk"]:
         status_code_stats[403] += 1
-        log_request(f"🚫 Unbekanntes Herkunftsland/Proxy ({country}) - Sofort-Umleitung zu Google")
+        update_traffic_history("blocked")
+        log_request(f"🚫 Unbekanntes Herkunftsland/Proxy ({country}) - Umleitung zu Google")
         self.send_response(303)
         self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
         self.end_headers()
@@ -763,6 +815,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         and client_ip not in WHITELISTED_IPS
     ):
       status_code_stats[503] += 1
+      update_traffic_history("overload")
       log_request("⚠️ 503 Server Überlastet (DDoS Limit)")
       self.send_response(503)
       self.send_header("Content-type", "text/html; charset=utf-8")
@@ -775,6 +828,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     if client_ip not in WHITELISTED_IPS:
       if client_ip in BANNED_IPS or client_ip in TEMPORARY_BANS:
         status_code_stats[403] += 1
+        update_traffic_history("blocked")
         log_request("🚫 403 IP Berechtigung entzogen / Bann")
         remaining_time = int(TEMPORARY_BANS.get(client_ip, now + BAN_DURATION) - now)
         if remaining_time < 1:
@@ -793,6 +847,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         if AUTO_BAN_ENABLED:
           TEMPORARY_BANS[client_ip] = now + BAN_DURATION
         status_code_stats[403] += 1
+        update_traffic_history("blocked")
         log_request("⚡ 403 Rate Limit Überschritten (Auto-Ban)")
         self.send_response(303)
         self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
@@ -800,7 +855,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         return
 
     TOTAL_REQUESTS_COUNT += 1
-    update_traffic_history()
 
     if path == "/banned-redirect":
       ban_time_param = query_params.get("time", [str(BAN_DURATION)])[0]
@@ -882,6 +936,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     if path == "/":
       if MAINTENANCE_MODE:
         status_code_stats[503] += 1
+        update_traffic_history("overload")
         self.send_response(503)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -892,6 +947,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       _, _, _, status_msg = analyze_client_detailed(self.headers)
       log_request(f"✅ {status_msg}")
       status_code_stats[200] += 1
+      update_traffic_history("success")
 
       self.send_response(200)
       self.send_header("Content-type", "text/html; charset=utf-8")
@@ -901,20 +957,31 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       if self.command == "HEAD":
         return
 
-      max_val = (
-          max(TRAFFIC_HISTORY)
-          if TRAFFIC_HISTORY and max(TRAFFIC_HISTORY) > 0
-          else 5
-      )
+      totals = [item[0] + item[1] + item[2] for item in TRAFFIC_HISTORY]
+      max_val = max(totals) if totals and max(totals) > 0 else 5
+      
       chart_html = ""
-      for val in TRAFFIC_HISTORY:
-        height_px = int((val / max_val) * 70)
-        if height_px < 4:
-          height_px = 4
-        chart_html += (
-            f'<div class="bar" style="height: {height_px}px;" title="{val}'
-            ' Anfragen"></div>'
-        )
+      for succ, block, over in TRAFFIC_HISTORY:
+        total_sec = succ + block + over
+        total_height_px = int((total_sec / max_val) * 70)
+        if total_height_px < 4 and total_sec > 0:
+          total_height_px = 4
+
+        if total_sec == 0:
+          chart_html += '<div class="bar-group"><div class="bar bar-success" style="height: 4px; opacity: 0.2;"></div></div>'
+        else:
+          h_succ = int((succ / total_sec) * total_height_px)
+          h_block = int((block / total_sec) * total_height_px)
+          h_over = int((over / total_sec) * total_height_px)
+
+          chart_html += f'<div class="bar-group" title="Erlaubt: {succ}, Geblockt: {block}, 503: {over}">'
+          if h_over > 0:
+            chart_html += f'<div class="bar bar-overload" style="height: {h_over}px;"></div>'
+          if h_block > 0:
+            chart_html += f'<div class="bar bar-blocked" style="height: {h_block}px;"></div>'
+          if h_succ > 0 or (h_succ == 0 and h_block == 0 and h_over == 0):
+            chart_html += f'<div class="bar bar-success" style="height: {max(4, h_succ)}px;"></div>'
+          chart_html += '</div>'
 
       page = (
           PUBLIC_HTML.replace("__TOTAL_REQ__", str(TOTAL_REQUESTS_COUNT))
@@ -1123,6 +1190,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
     if MAINTENANCE_MODE:
       status_code_stats[503] += 1
+      update_traffic_history("overload")
       log_request("⚙️ 503 Wartungsmodus aktiv")
       self.send_response(503)
       self.send_header("Content-type", "text/html; charset=utf-8")
@@ -1134,6 +1202,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
     geo_loc, country = get_geoip_and_country(client_ip)
     country_stats[country] += 1
     status_code_stats[200] += 1
+    update_traffic_history("success")
 
     _, _, _, status_msg = analyze_client_detailed(self.headers)
     log_request(f"✅ {status_msg}")

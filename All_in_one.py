@@ -28,7 +28,6 @@ ADMIN_PASSWORD = "Luca123"
 
 TEMPORARY_BANS = {}
 
-# Hier kannst du deine festen Whitelist-IPs direkt dauerhaft hinterlegen:
 default_settings = {
     "maintenance": False,
     "autoban": True,
@@ -37,7 +36,7 @@ default_settings = {
     "server_limit": 150,
     "throttle_delay": 2.0,
     "banned_ips": [],
-    "whitelisted_ips": ["127.0.0.1", "::1"], # Trage hier bei Bedarf weitere IPs ein
+    "whitelisted_ips": ["127.0.0.1", "::1"],
     "allow_desktop": True,
     "allow_mobile": True,
     "allow_chrome": True,
@@ -80,7 +79,6 @@ def load_settings():
         THROTTLE_DELAY = data.get("throttle_delay", default_settings["throttle_delay"])
         BANNED_IPS = set(data.get("banned_ips", default_settings["banned_ips"]))
         
-        # Whitelist aus Datei laden und mit den harten Standardwerten kombinieren
         loaded_wl = data.get("whitelisted_ips", default_settings["whitelisted_ips"])
         WHITELISTED_IPS = set(loaded_wl).union(set(default_settings["whitelisted_ips"]))
 
@@ -743,7 +741,6 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         return
 
-      # STRIKTE PRÜFUNG: Alles was nicht eindeutig einem normalen Land zugeordnet werden kann, wird umgeleitet
       geo_loc, country = get_geoip_and_country(client_ip)
       if country in ["Unbekannt", "Standort unbekannt", "Lokales Netzwerk"]:
         status_code_stats[403] += 1
@@ -821,11 +818,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
       <body>
           <script>
               let timeLeft = {ban_seconds};
-              
-              // Sofort zu Google umleiten für die Dauer des Bans
               window.location.replace("https://www.google.com");
-
-              // Timer-Logik im Hintergrund bzw. wenn man zurückkommt
               const interval = setInterval(() => {{
                   timeLeft--;
                   if(timeLeft <= 0) {{
@@ -888,6 +881,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
     if path == "/":
       if MAINTENANCE_MODE:
+        status_code_stats[503] += 1
         self.send_response(503)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -897,6 +891,7 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
 
       _, _, _, status_msg = analyze_client_detailed(self.headers)
       log_request(f"✅ {status_msg}")
+      status_code_stats[200] += 1
 
       self.send_response(200)
       self.send_header("Content-type", "text/html; charset=utf-8")

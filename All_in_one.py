@@ -28,6 +28,7 @@ ADMIN_PASSWORD = "Luca123"
 
 TEMPORARY_BANS = {}
 
+# Hier kannst du deine festen Whitelist-IPs direkt dauerhaft hinterlegen:
 default_settings = {
     "maintenance": False,
     "autoban": True,
@@ -36,7 +37,7 @@ default_settings = {
     "server_limit": 150,
     "throttle_delay": 2.0,
     "banned_ips": [],
-    "whitelisted_ips": ["127.0.0.1", "::1"],
+    "whitelisted_ips": ["127.0.0.1", "::1"], # Trage hier bei Bedarf weitere IPs ein
     "allow_desktop": True,
     "allow_mobile": True,
     "allow_chrome": True,
@@ -78,7 +79,11 @@ def load_settings():
         SERVER_LIMIT = data.get("server_limit", default_settings["server_limit"])
         THROTTLE_DELAY = data.get("throttle_delay", default_settings["throttle_delay"])
         BANNED_IPS = set(data.get("banned_ips", default_settings["banned_ips"]))
-        WHITELISTED_IPS = set(data.get("whitelisted_ips", default_settings["whitelisted_ips"]))
+        
+        # Whitelist aus Datei laden und mit den harten Standardwerten kombinieren
+        loaded_wl = data.get("whitelisted_ips", default_settings["whitelisted_ips"])
+        WHITELISTED_IPS = set(loaded_wl).union(set(default_settings["whitelisted_ips"]))
+
         ALLOW_DESKTOP = data.get("allow_desktop", default_settings["allow_desktop"])
         ALLOW_MOBILE = data.get("allow_mobile", default_settings["allow_mobile"])
         ALLOW_CHROME = data.get("allow_chrome", default_settings["allow_chrome"])
@@ -160,7 +165,7 @@ def get_geoip_and_country(ip):
       or ip.startswith("192.168.")
       or ip.startswith("10.")
   ):
-    return "Lokales Netzwerk", "Lokaler Server"
+    return "Lokales Netzwerk", "Lokales Netzwerk"
   if ip in GEO_CACHE:
     return GEO_CACHE[ip]
   try:
@@ -738,11 +743,11 @@ class FastTrafficHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         return
 
-      # NEU: Unbekannte Länder / GeoIP-Fehler sofort abfangen und zu Google umleiten
+      # STRIKTE PRÜFUNG: Alles was nicht eindeutig einem normalen Land zugeordnet werden kann, wird umgeleitet
       geo_loc, country = get_geoip_and_country(client_ip)
-      if country == "Unbekannt":
+      if country in ["Unbekannt", "Standort unbekannt", "Lokales Netzwerk"]:
         status_code_stats[403] += 1
-        log_request(f"🚫 Unbekanntes Herkunftsland - Sofort-Umleitung zu Google")
+        log_request(f"🚫 Unbekanntes Herkunftsland/Proxy ({country}) - Sofort-Umleitung zu Google")
         self.send_response(303)
         self.send_header("Location", f"/banned-redirect?time={BAN_DURATION}")
         self.end_headers()

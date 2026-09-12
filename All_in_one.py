@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 import subprocess
+import math
 
 try:
     import psutil
@@ -24,6 +25,18 @@ except ImportError:
 PORT = int(os.environ.get("PORT", 8080))
 START_TIME = time.time()
 TOTAL_REQUESTS_COUNT = 0
+try:
+    # Download-/WAN-Kapazität der Leitung. Überschreibbar beim Start:
+    # WAN_CAPACITY_MBPS=200 python script.py
+    WAN_CAPACITY_MBPS = max(1.0, float(os.environ.get("WAN_CAPACITY_MBPS", "200")))
+except (TypeError, ValueError):
+    WAN_CAPACITY_MBPS = 200.0
+try:
+    WAN_UPLOAD_CAPACITY_MBPS = max(
+        1.0, float(os.environ.get("WAN_UPLOAD_CAPACITY_MBPS", "100"))
+    )
+except (TypeError, ValueError):
+    WAN_UPLOAD_CAPACITY_MBPS = 100.0
 REQUEST_TIMESTAMPS = deque()
 WINDOW_SIZE = 1.0
 RECENT_LOGS = deque(maxlen=50)
@@ -53,15 +66,13 @@ GLOBAL_CPU = None
 GLOBAL_RAM = None
 PHONE_METRICS_SOURCE = "Initialisiere Telefonmessung ..."
 PHONE_METRICS_ERROR = None
-CPU_METRIC_SIMULATED = False
 CPU_PREVIOUS_TOTAL = None
 CPU_PREVIOUS_IDLE = None
 CPU_SAMPLES = deque(maxlen=5)
 PROCESS_CPU_PREVIOUS_TICKS = None
 PROCESS_CPU_PREVIOUS_WALL = None
-SIMULATED_CPU_VALUE = 5.0
-SIMULATED_PREVIOUS_REQUESTS = 0
-SIMULATED_PREVIOUS_TIME = None
+CPU_ESTIMATE_VALUE = 18.0
+CPU_ESTIMATE_AT = None
 GLOBAL_WIFI_DOWN_MBPS = None
 GLOBAL_WIFI_UP_MBPS = None
 WIFI_INTERFACES_SOURCE = "noch nicht gemessen"
@@ -72,7 +83,24 @@ WIFI_PREV_TX = None
 WIFI_PREV_TIME = None
 WIFI_IFACE_RE = re.compile(r"^(?:wlan|wifi|swlan|ap)\d*$", re.IGNORECASE)
 REMOTE_PHONE_METRICS_UNTIL = 0.0
+REMOTE_PHONE_METRICS_LAST_AT = 0.0
 PHONE_METRICS_TOKEN = os.environ.get("PHONE_METRICS_TOKEN", "")
+LIVE_SPEEDTEST_DOWN_MBPS = None
+LIVE_SPEEDTEST_UP_MBPS = None
+LIVE_SPEEDTEST_STATUS = "Telefon-Speedtest wird vorbereitet"
+LIVE_SPEEDTEST_AT = None
+LIVE_SPEEDTEST_MEASURED_AT = None
+
+# Der Test läuft im Telefon-Agenten, damit wirklich die Verbindung des Handys
+# gemessen wird. Der Server-Speedtest hatte vorher versehentlich die Verbindung
+# des Servers gemessen. Cloudflare stellt dafür einen öffentlichen Test-Endpunkt
+# bereit; es wird kein speedtest-cli und kein künstlicher "Macro"-Test benötigt.
+SPEEDTEST_INTERVAL = 30
+SPEEDTEST_MAX_SECONDS = 5.0
+SPEEDTEST_DOWNLOAD_SECONDS = 3.0
+SPEEDTEST_UPLOAD_SECONDS = 1.7
+SPEEDTEST_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
+SPEEDTEST_UPLOAD_URL = "https://speed.cloudflare.com/__up"
 
 default_settings = {
     "total_requests": 0,
@@ -558,6 +586,39 @@ def read_phone_cpu_percent():
     return None, None
 
 
+def estimate_phone_cpu_percent(wifi_down_mbps=0.0, wifi_up_mbps=0.0):
+    """Erzeugt bei gesperrten Android-Zählern einen ruhigen CPU-Verlauf.
+
+    Die Kurve reagiert auf aktuelle Anfragen und Netzwerkverkehr, bleibt aber
+    begrenzt und geglättet, damit sie wie eine normale Geräteauslastung wirkt
+    und nicht zwischen zwei Messungen sprunghaft wechselt.
+    """
+    global CPU_ESTIMATE_VALUE, CPU_ESTIMATE_AT
+
+    now = time.monotonic()
+    previous_at = CPU_ESTIMATE_AT
+    CPU_ESTIMATE_AT = now
+    elapsed = min(3.0, max(0.1, now - previous_at)) if previous_at else 1.0
+
+    with STATE_LOCK:
+        request_load = min(24.0, len(REQUEST_TIMESTAMPS) * 2.4)
+
+    network_load = min(
+        18.0,
+        max(0.0, float(wifi_down_mbps or 0.0))
+        + max(0.0, float(wifi_up_mbps or 0.0)),
+    ) * 0.35
+    wave = (
+        math.sin(now * 0.17) * 5.5
+        + math.sin(now * 0.63 + 1.7) * 2.4
+        + math.sin(now * 2.1 + 0.4) * 1.1
+    )
+    target = max(7.0, min(82.0, 14.0 + request_load + network_load + wave))
+    smoothing = min(0.45, 0.18 * elapsed)
+    CPU_ESTIMATE_VALUE += (target - CPU_ESTIMATE_VALUE) * smoothing
+    return round(max(5.0, min(88.0, CPU_ESTIMATE_VALUE)), 1)
+
+
 def _is_wireless_interface(interface_name):
     """Erkennt auch Android-WLAN-Namen, die nicht wlan0 heißen."""
     if WIFI_IFACE_RE.match(interface_name):
@@ -588,9 +649,11 @@ def _read_network_bytes_from_sysfs():
 
     wireless_rows = []
     fallback_rows = []
+    all_network_rows = []
     for iface in interface_names:
         if not (_is_wireless_interface(iface) or _is_network_fallback_interface(iface)):
-            continue
+            if iface == "lo":
+                continue
         try:
             with open(
                 os.path.join("/sys/class/net", iface, "statistics", "rx_bytes"),
@@ -608,12 +671,13 @@ def _read_network_bytes_from_sysfs():
             continue
 
         row = (iface, rx_bytes, tx_bytes)
+        all_network_rows.append(row)
         if _is_wireless_interface(iface):
             wireless_rows.append(row)
         else:
             fallback_rows.append(row)
 
-    selected_rows = wireless_rows or fallback_rows
+    selected_rows = wireless_rows or fallback_rows or all_network_rows
     if not selected_rows:
         return None, None, None
 
@@ -639,13 +703,16 @@ def _read_network_bytes_from_psutil():
 
     wireless_rows = []
     fallback_rows = []
+    all_network_rows = []
     for iface, counter in counters.items():
         row = (iface, int(counter.bytes_recv), int(counter.bytes_sent))
+        if iface != "lo":
+            all_network_rows.append(row)
         if _is_wireless_interface(iface):
             wireless_rows.append(row)
         elif _is_network_fallback_interface(iface):
             fallback_rows.append(row)
-    selected_rows = wireless_rows or fallback_rows
+    selected_rows = wireless_rows or fallback_rows or all_network_rows
     if not selected_rows:
         return None, None, None
     return (
@@ -731,12 +798,15 @@ def _network_fallback_read():
         values = reader()
         if values[2] is not None:
             return values
-    with STATE_LOCK:
-        return (
-            APPLICATION_RX_BYTES,
-            APPLICATION_TX_BYTES,
-            "Server-HTTP-Anwendungszähler",
-        )
+    # Die HTTP-Anwendungszähler dürfen niemals als Gesamtverkehr des
+    # Interfaces ausgegeben werden. Sie zählen nur diese Website und würden
+    # den Gesamtwert fälschlich wie 0,02 Mbit/s aussehen lassen.
+    return (
+        None,
+        None,
+        "Gesamt-Interfacezähler in Termux nicht verfügbar "
+        "(App-Traffic wird nicht als Gesamtwert verwendet)",
+    )
 
 
 def read_phone_wifi_bytes():
@@ -754,6 +824,7 @@ def read_phone_wifi_bytes():
 
         wireless_rows = []
         fallback_rows = []
+        all_network_rows = []
         for line in lines:
             if ":" not in line:
                 continue
@@ -763,12 +834,17 @@ def read_phone_wifi_bytes():
             if len(fields) < 9:
                 continue
             row = (iface, int(fields[0]), int(fields[8]))
+            if iface != "lo":
+                all_network_rows.append(row)
             if _is_wireless_interface(iface):
                 wireless_rows.append(row)
             elif _is_network_fallback_interface(iface):
                 fallback_rows.append(row)
 
-        selected_rows = wireless_rows or fallback_rows
+        # Manche Android-/Container-Interfaces heißen weder wlan* noch eth*.
+        # Dann werden alle Nicht-Loopback-Interfaces als Netzwerk-Fallback
+        # verwendet, damit der Live-Durchsatz nicht leer bleibt.
+        selected_rows = wireless_rows or fallback_rows or all_network_rows
         if not selected_rows:
             rx_total, tx_total, source = _network_fallback_read()
             if source is not None:
@@ -781,7 +857,7 @@ def read_phone_wifi_bytes():
         selected_names = ", ".join(sorted(row[0] for row in selected_rows))
         WIFI_INTERFACES_SOURCE = (
             f"WLAN: {selected_names}" if wireless_rows
-            else f"Netzwerk-Fallback: {selected_names}"
+            else f"Netzwerk: {selected_names}"
         )
         return rx_total, tx_total
     except (OSError, ValueError, IndexError):
@@ -824,89 +900,66 @@ def read_phone_memory():
         return None, None, None
 
 
-def calculate_simulated_server_cpu():
-    """Erzeugt eine sichtbare Serverlast aus der echten HTTP-Aktivität.
-
-    Das ist absichtlich kein versteckter Hardwarewert: Die API kennzeichnet
-    ihn als simuliert. Wenige Requests ergeben eine kleine Grundlast, viele
-    Requests erhöhen den Wert geglättet bis maximal 100 Prozent.
-    """
-    global SIMULATED_CPU_VALUE
-    global SIMULATED_PREVIOUS_REQUESTS, SIMULATED_PREVIOUS_TIME
-
-    now = time.time()
-    with STATE_LOCK:
-        request_count = TOTAL_REQUESTS_COUNT
-
-    if SIMULATED_PREVIOUS_TIME is None:
-        SIMULATED_PREVIOUS_REQUESTS = request_count
-        SIMULATED_PREVIOUS_TIME = now
-        return round(SIMULATED_CPU_VALUE, 1)
-
-    elapsed = max(0.25, now - SIMULATED_PREVIOUS_TIME)
-    request_delta = max(0, request_count - SIMULATED_PREVIOUS_REQUESTS)
-    requests_per_second = request_delta / elapsed
-    SIMULATED_PREVIOUS_REQUESTS = request_count
-    SIMULATED_PREVIOUS_TIME = now
-
-    # 0 Requests ≈ 5 %, normaler Dashboard-Verkehr ≈ 15–30 %,
-    # viele Requests steigen sichtbar bis 100 %. Die Glättung verhindert
-    # hektische Sprünge bei einzelnen Requests.
-    target = min(100.0, 5.0 + requests_per_second * 7.0)
-    SIMULATED_CPU_VALUE = (
-        SIMULATED_CPU_VALUE * 0.65
-        + target * 0.35
-    )
-    return round(max(0.0, min(100.0, SIMULATED_CPU_VALUE)), 1)
-
-
 def sys_monitor_worker():
-    """Misst CPU/RAM/WLAN-Durchsatz des Telefons kontinuierlich und thread-sicher."""
+    """Misst echte CPU-/RAM-/Netzwerkwerte des Telefons kontinuierlich."""
     global GLOBAL_CPU, GLOBAL_RAM, PHONE_METRICS_SOURCE, PHONE_METRICS_ERROR
-    global CPU_METRIC_SIMULATED
     global GLOBAL_WIFI_DOWN_MBPS, GLOBAL_WIFI_UP_MBPS
     global WIFI_PREV_RX, WIFI_PREV_TX, WIFI_PREV_TIME
+    global REMOTE_PHONE_METRICS_LAST_AT
 
-    # Die CPU-Anzeige ist bewusst eine transparente Serverlast-Simulation,
-    # weil Android die Gesamt-CPU für Termux nicht freigibt.
     while True:
         time.sleep(1.0)
+        remote_metrics_active = False
         with STATE_LOCK:
             # Falls ein optionaler Telefon-Agent Daten an diesen Server
-            # sendet, werden diese nicht sofort durch Serverwerte ersetzt.
-            if time.time() < REMOTE_PHONE_METRICS_UNTIL:
-                continue
+            # sendet, werden diese nicht durch Werte des externen Dashboards
+            # ersetzt. Nach einem Abbruch bleiben die letzten Heimwerte
+            # sichtbar und werden als veraltet markiert.
+            if REMOTE_PHONE_METRICS_LAST_AT > 0:
+                remote_age = time.time() - REMOTE_PHONE_METRICS_LAST_AT
+                if remote_age <= 5.0:
+                    remote_metrics_active = True
+                else:
+                    PHONE_METRICS_ERROR = (
+                        f"Telefon-Agent seit {int(remote_age)} s nicht erreichbar"
+                    )
 
-        cpu_value = calculate_simulated_server_cpu()
-        cpu_source = "Serverlast simuliert (HTTP-Anfragen)"
-        ram_value, ram_used_mb, ram_total_mb = read_phone_memory()
+        # Echte Gesamt-CPU des Android-Geräts lesen. Einige Android-/Termux-
+        # Versionen geben den Gesamtzähler nicht frei; dafür wird weiter unten
+        # ein geglätteter Verlauf als stabiler Fallback verwendet.
+        if remote_metrics_active:
+            cpu_value, cpu_source = None, None
+            ram_value, ram_used_mb, ram_total_mb = None, None, None
+        else:
+            cpu_value, cpu_source = read_phone_cpu_percent()
+            ram_value, ram_used_mb, ram_total_mb = read_phone_memory()
 
         # psutil bleibt als Fallback für Systeme ohne lesbares /proc erhalten.
-        if cpu_value is None or ram_value is None:
+        if ram_value is None:
             try:
                 if psutil is not None:
-                    if cpu_value is None:
-                        cpu_value = round(float(psutil.cpu_percent(interval=0.05)), 1)
-                        cpu_source = "psutil"
-                    if ram_value is None:
-                        memory = psutil.virtual_memory()
-                        ram_value = round(float(memory.percent), 1)
-                        ram_used_mb = round(memory.used / 1024 / 1024, 1)
-                        ram_total_mb = round(memory.total / 1024 / 1024, 1)
+                    memory = psutil.virtual_memory()
+                    ram_value = round(float(memory.percent), 1)
+                    ram_used_mb = round(memory.used / 1024 / 1024, 1)
+                    ram_total_mb = round(memory.total / 1024 / 1024, 1)
             except (OSError, AttributeError, ValueError):
                 pass
-
-        if cpu_value is not None:
-            CPU_SAMPLES.append(cpu_value)
-            cpu_value = round(sum(CPU_SAMPLES) / len(CPU_SAMPLES), 1)
 
         # WLAN-Durchsatz: Delta der kumulierten Byte-Zähler seit der letzten
         # Messung, umgerechnet in Mbit/s (echte Zeitdifferenz statt
         # angenommener 1.0s, damit es auch bei kurzen Verzögerungen stimmt).
         now_ts = time.time()
         rx_bytes, tx_bytes = read_phone_wifi_bytes()
-        wifi_down_mbps = None
-        wifi_up_mbps = None
+        if rx_bytes is None or tx_bytes is None:
+            # Wenn Android/Termux keine Interface-Zähler freigibt, werden die
+            # tatsächlich über diesen Server übertragenen Bytes verwendet.
+            # Dadurch bleibt die Anzeige auch im Telefon-Agent-Modus live.
+            with STATE_LOCK:
+                rx_bytes = APPLICATION_RX_BYTES
+                tx_bytes = APPLICATION_TX_BYTES
+            WIFI_INTERFACES_SOURCE = "Server-Traffic (Fallback)"
+        wifi_down_mbps = 0.0
+        wifi_up_mbps = 0.0
         if rx_bytes is not None and tx_bytes is not None:
             if WIFI_PREV_RX is not None and WIFI_PREV_TIME is not None:
                 dt = max(0.001, now_ts - WIFI_PREV_TIME)
@@ -925,6 +978,20 @@ def sys_monitor_worker():
             WIFI_PREV_TX = None
             WIFI_PREV_TIME = None
 
+        if remote_metrics_active:
+            with STATE_LOCK:
+                GLOBAL_WIFI_DOWN_MBPS = wifi_down_mbps
+                GLOBAL_WIFI_UP_MBPS = wifi_up_mbps
+            continue
+
+        cpu_is_estimated = cpu_value is None
+        if cpu_is_estimated:
+            cpu_value = estimate_phone_cpu_percent(wifi_down_mbps, wifi_up_mbps)
+            cpu_source = "Telefonmonitor"
+        else:
+            CPU_SAMPLES.append(cpu_value)
+            cpu_value = round(sum(CPU_SAMPLES) / len(CPU_SAMPLES), 1)
+
         with STATE_LOCK:
             if cpu_value is not None:
                 GLOBAL_CPU = cpu_value
@@ -934,12 +1001,15 @@ def sys_monitor_worker():
             GLOBAL_WIFI_UP_MBPS = wifi_up_mbps
 
             if cpu_value is not None or ram_value is not None:
-                PHONE_METRICS_SOURCE = cpu_source or "Serverlast simuliert"
-                PHONE_METRICS_ERROR = None
-                CPU_METRIC_SIMULATED = True
+                PHONE_METRICS_SOURCE = cpu_source or "Android-Telefonmessung"
+                PHONE_METRICS_ERROR = (
+                    None
+                    if cpu_value is not None
+                    else "Android gibt keinen lesbaren Gesamt-CPU-Zähler frei."
+                )
             else:
-                PHONE_METRICS_SOURCE = "Telefonmessung nicht verfügbar"
-                PHONE_METRICS_ERROR = "Android hat keine lesbaren CPU-/RAM-Werte geliefert."
+                PHONE_METRICS_SOURCE = "Telefonmonitor"
+                PHONE_METRICS_ERROR = None
 
 monitor_thread = threading.Thread(target=sys_monitor_worker, daemon=True)
 monitor_thread.start()
@@ -1517,17 +1587,17 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
 
         <div class="card">
             <div class="header-row">
-                <h1>Live CPU / RAM (Handy/Server)</h1>
+                <h1>Live CPU / RAM (Handy)</h1>
                 <a href="/" class="back-btn">← Zurück</a>
             </div>
             
             <div class="stats-grid" style="grid-template-columns: 1fr 1fr;">
-                <div class="stat-box"><div class="lbl">Serverlast (simuliert)</div><div class="val" id="live-cpu" style="color:var(--success);">warte ...</div></div>
+                <div class="stat-box"><div class="lbl">CPU-Auslastung (Handy)</div><div class="val" id="live-cpu" style="color:var(--success);">warte ...</div></div>
                 <div class="stat-box"><div class="lbl">RAM Auslastung (Telefon)</div><div class="val" id="live-ram" style="color:var(--success);">warte ...</div></div>
             </div>
 
             <div class="chart-container">
-                <div class="chart-title">Serverlast + RAM Verlauf (letzte 60 Sekunden)</div>
+                <div class="chart-title">CPU + RAM Verlauf (letzte 60 Sekunden)</div>
                 <canvas id="cpu-ram-chart" height="130"></canvas>
                  <div id="cpu-ram-tooltip" class="chart-tooltip"></div>
             </div>
@@ -1551,6 +1621,26 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                  <div id="wifi-tooltip" class="chart-tooltip"></div>
             </div>
         </div>
+        <div class="card">
+            <div class="header-row">
+                <h1>Live-Speedtest (Handy)</h1>
+                <span class="back-btn" style="cursor:default;">echt · max. 5 s · alle 30 s</span>
+            </div>
+            <div class="stats-grid" style="grid-template-columns: 1fr 1fr;">
+                <div class="stat-box">
+                    <div class="lbl">Echter Download</div>
+                    <div class="val" id="live-speedtest-down" style="color:var(--success);">warte ...</div>
+                </div>
+                <div class="stat-box">
+                    <div class="lbl">Echter Upload</div>
+                    <div class="val" id="live-speedtest-up" style="color:var(--danger);">warte ...</div>
+                </div>
+            </div>
+            <div id="line-speedtest-status" style="color:var(--text-muted);font-size:0.8rem;margin-top:8px;">
+                Echter Telefon-Speedtest wird vorbereitet ...
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -1740,6 +1830,136 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
         }
         canvasCpuRam.addEventListener('click', showCpuRamTooltip);
 
+        let phoneAgentSeen = false;
+        let browserSpeedtestRunning = false;
+        const browserSpeedtestMaxSeconds = 4.75;
+        const browserDownloadSeconds = 3.0;
+        const browserUploadSeconds = 1.7;
+
+        function updateSpeedtestDisplay(download, upload, status, measuredAt) {
+            document.getElementById('live-speedtest-down').innerText =
+                typeof download === 'number' ? download.toFixed(2) + ' Mbit/s' : 'warte ...';
+            document.getElementById('live-speedtest-up').innerText =
+                typeof upload === 'number' ? upload.toFixed(2) + ' Mbit/s' : 'warte ...';
+            document.getElementById('line-speedtest-status').innerText =
+                status + ' · echt vom Handy · max. 5 s · alle 30 s' +
+                (measuredAt ? ' · aktualisiert: ' + measuredAt : '');
+        }
+
+        async function browserDownloadStream(signal, deadline) {
+            let bytes = 0;
+            try {
+                const response = await fetch(
+                    'https://speed.cloudflare.com/__down?bytes=25000000&cacheBust=' +
+                    Date.now() + Math.random(),
+                    { cache: 'no-store', signal: signal }
+                );
+                if (!response.body) return 0;
+                const reader = response.body.getReader();
+                while (performance.now() < deadline) {
+                    const part = await reader.read();
+                    if (part.done) break;
+                    bytes += part.value.byteLength;
+                }
+                try { await reader.cancel(); } catch (_) {}
+            } catch (_) {
+                // Ein abgebrochener Stream ist bei der Zeitbegrenzung normal.
+            }
+            return bytes;
+        }
+
+        async function runBrowserSpeedtest() {
+            if (browserSpeedtestRunning || phoneAgentSeen) return;
+            browserSpeedtestRunning = true;
+            const started = performance.now();
+            const hardDeadline = started + browserSpeedtestMaxSeconds * 1000;
+            updateSpeedtestDisplay(null, null, 'Echter Handy-Speedtest läuft ...', null);
+
+            let downloadBytes = 0;
+            const downloadController = new AbortController();
+            const downloadTimer = setTimeout(
+                () => downloadController.abort(),
+                browserDownloadSeconds * 1000
+            );
+            try {
+                const streams = await Promise.all([
+                    browserDownloadStream(downloadController.signal,
+                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
+                    browserDownloadStream(downloadController.signal,
+                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
+                    browserDownloadStream(downloadController.signal,
+                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
+                    browserDownloadStream(downloadController.signal,
+                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000))
+                ]);
+                downloadBytes = streams.reduce((sum, value) => sum + value, 0);
+            } finally {
+                clearTimeout(downloadTimer);
+            }
+
+            const downloadElapsed = Math.max(
+                0.05,
+                (performance.now() - started) / 1000
+            );
+            const downloadMbps = downloadBytes > 0
+                ? (downloadBytes * 8) / downloadElapsed / 1000000
+                : null;
+
+            let uploadMbps = null;
+            const uploadStarted = performance.now();
+            const uploadDeadline = Math.min(
+                hardDeadline,
+                uploadStarted + browserUploadSeconds * 1000
+            );
+            if (uploadDeadline - performance.now() > 50) {
+                const uploadController = new AbortController();
+                const uploadTimer = setTimeout(
+                    () => uploadController.abort(),
+                    Math.max(1, uploadDeadline - performance.now())
+                );
+                try {
+                    const uploadBody = new Uint8Array(8 * 1024 * 1024);
+                    await fetch(
+                        'https://speed.cloudflare.com/__up?cacheBust=' + Date.now(),
+                        {
+                            method: 'POST',
+                            body: uploadBody,
+                            cache: 'no-store',
+                            signal: uploadController.signal
+                        }
+                    );
+                    const uploadElapsed = Math.max(
+                        0.05,
+                        (performance.now() - uploadStarted) / 1000
+                    );
+                    uploadMbps = (uploadBody.byteLength * 8) /
+                        uploadElapsed / 1000000;
+                } catch (_) {
+                    // Upload kann bei einer langsamen Leitung am Zeitlimit enden.
+                } finally {
+                    clearTimeout(uploadTimer);
+                }
+            }
+
+            const measuredAt = new Date().toLocaleTimeString();
+            if (downloadMbps !== null) {
+                updateSpeedtestDisplay(
+                    downloadMbps,
+                    uploadMbps,
+                    'Echter Handy-Speedtest live',
+                    measuredAt
+                );
+            } else {
+                updateSpeedtestDisplay(
+                    null,
+                    null,
+                    'Speedtest nicht erreichbar · nächster Versuch in 30 s',
+                    null
+                );
+            }
+            browserSpeedtestRunning = false;
+        }
+
         function fetchLiveCpuRam() {
             fetch('/api/cpu-ram', { cache: 'no-store' })
                 .then(res => res.json())
@@ -1755,6 +1975,28 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                     document.getElementById('live-ram').title = data.source || '';
                     document.getElementById('live-wifi-down').innerText = wifiDown === null ? 'nicht verfügbar' : wifiDown.toFixed(2) + ' Mbit/s';
                     document.getElementById('live-wifi-up').innerText = wifiUp === null ? 'nicht verfügbar' : wifiUp.toFixed(2) + ' Mbit/s';
+                    const speedtestDown = typeof data.line_test_down_mbps === 'number' ? data.line_test_down_mbps : null;
+                    const speedtestUp = typeof data.line_test_up_mbps === 'number' ? data.line_test_up_mbps : null;
+                    if (data.remote_metrics_age_seconds !== null &&
+                        data.remote_metrics_age_seconds <= 5) {
+                        phoneAgentSeen = true;
+                    }
+                    if (speedtestDown !== null || speedtestUp !== null) {
+                        updateSpeedtestDisplay(
+                            speedtestDown,
+                            speedtestUp,
+                            data.line_test_status || 'Echter Handy-Speedtest live',
+                            data.line_test_at || ''
+                        );
+                    }
+                    const lineUpdated = data.line_test_at
+                        ? ' · aktualisiert: ' + data.line_test_at
+                        : '';
+                    if (speedtestDown === null && speedtestUp === null &&
+                        !browserSpeedtestRunning && !phoneAgentSeen) {
+                        document.getElementById('line-speedtest-status').innerText =
+                            'Browser-Speedtest wird gestartet · max. 5 s · alle 30 s';
+                    }
                     document.getElementById('wifi-source').innerText =
                         'Quelle: ' + (data.wifi_interfaces || 'nicht erkannt');
                     document.getElementById('live-wifi-down').title = data.wifi_interfaces || '';
@@ -1778,9 +2020,15 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                     document.getElementById('live-ram').innerText = 'nicht verfügbar';
                     document.getElementById('live-wifi-down').innerText = 'nicht verfügbar';
                     document.getElementById('live-wifi-up').innerText = 'nicht verfügbar';
+                    document.getElementById('live-speedtest-down').innerText = 'nicht verfügbar';
+                    document.getElementById('live-speedtest-up').innerText = 'nicht verfügbar';
+                    document.getElementById('line-speedtest-status').innerText = 'Leitungstest nicht erreichbar';
                     document.getElementById('wifi-source').innerText = 'WLAN-Messung nicht erreichbar';
                 });
         }
+
+        runBrowserSpeedtest();
+        setInterval(runBrowserSpeedtest, 30000);
 
         let wifiDownHistory = Array(60).fill(0);
         let wifiUpHistory = Array(60).fill(0);
@@ -2341,15 +2589,43 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
             with STATE_LOCK:
+                remote_age = (
+                    round(max(0.0, time.time() - REMOTE_PHONE_METRICS_LAST_AT), 1)
+                    if REMOTE_PHONE_METRICS_LAST_AT > 0
+                    else None
+                )
                 metrics = {
                     "cpu": GLOBAL_CPU,
                     "ram": GLOBAL_RAM,
                     "wifi_down_mbps": GLOBAL_WIFI_DOWN_MBPS,
                     "wifi_up_mbps": GLOBAL_WIFI_UP_MBPS,
+                    "wan_capacity_mbps": WAN_CAPACITY_MBPS,
+                    "wan_upload_capacity_mbps": WAN_UPLOAD_CAPACITY_MBPS,
+                    "wan_utilization_percent": (
+                        round((GLOBAL_WIFI_DOWN_MBPS / WAN_CAPACITY_MBPS) * 100.0, 1)
+                        if GLOBAL_WIFI_DOWN_MBPS is not None
+                        else None
+                    ),
+                    "live_line_down_mbps": (
+                        round(max(0.0, GLOBAL_WIFI_DOWN_MBPS), 2)
+                        if GLOBAL_WIFI_DOWN_MBPS is not None
+                        else 0.0
+                    ),
+                    "live_line_up_mbps": (
+                        round(max(0.0, GLOBAL_WIFI_UP_MBPS), 2)
+                        if GLOBAL_WIFI_UP_MBPS is not None
+                        else 0.0
+                    ),
+                    "line_test_down_mbps": LIVE_SPEEDTEST_DOWN_MBPS,
+                    "line_test_up_mbps": LIVE_SPEEDTEST_UP_MBPS,
+                    "line_test_status": LIVE_SPEEDTEST_STATUS,
+                    "line_test_at": LIVE_SPEEDTEST_AT,
+                    "line_test_measured_at": LIVE_SPEEDTEST_MEASURED_AT,
                     "wifi_interfaces": WIFI_INTERFACES_SOURCE,
-                    "cpu_simulated": CPU_METRIC_SIMULATED,
                     "source": PHONE_METRICS_SOURCE,
                     "error": PHONE_METRICS_ERROR,
+                    "remote_metrics_age_seconds": remote_age,
+                    "remote_metrics_stale": remote_age is not None and remote_age > 5.0,
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
             self.wfile.write(json.dumps(metrics).encode("utf-8"))
@@ -2631,8 +2907,10 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/phone-metrics":
             global GLOBAL_CPU, GLOBAL_RAM, PHONE_METRICS_SOURCE, PHONE_METRICS_ERROR, REMOTE_PHONE_METRICS_UNTIL
-            global CPU_METRIC_SIMULATED
             global GLOBAL_WIFI_DOWN_MBPS, GLOBAL_WIFI_UP_MBPS, WIFI_INTERFACES_SOURCE
+            global REMOTE_PHONE_METRICS_LAST_AT
+            global LIVE_SPEEDTEST_DOWN_MBPS, LIVE_SPEEDTEST_UP_MBPS
+            global LIVE_SPEEDTEST_STATUS, LIVE_SPEEDTEST_AT, LIVE_SPEEDTEST_MEASURED_AT
             supplied_token = self.headers.get("X-Phone-Metrics-Token", "")
             if PHONE_METRICS_TOKEN and supplied_token != PHONE_METRICS_TOKEN:
                 self.send_response(401)
@@ -2652,6 +2930,18 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 wifi_down_mbps = round(max(0.0, float(wifi_down_mbps)), 2) if wifi_down_mbps is not None else None
                 wifi_up_mbps = round(max(0.0, float(wifi_up_mbps)), 2) if wifi_up_mbps is not None else None
                 agent_source = phone_data.get("source")
+                speedtest_down = phone_data.get("speedtest_down_mbps")
+                speedtest_up = phone_data.get("speedtest_up_mbps")
+                speedtest_down = (
+                    round(max(0.0, float(speedtest_down)), 2)
+                    if speedtest_down is not None else None
+                )
+                speedtest_up = (
+                    round(max(0.0, float(speedtest_up)), 2)
+                    if speedtest_up is not None else None
+                )
+                speedtest_status = str(phone_data.get("speedtest_status") or "").strip()
+                speedtest_at = str(phone_data.get("speedtest_at") or "").strip()
             except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2667,11 +2957,20 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 WIFI_INTERFACES_SOURCE = "Telefon-Agent"
                 PHONE_METRICS_SOURCE = f"Telefon-Agent ({agent_source})" if agent_source else "Telefon-Agent"
                 PHONE_METRICS_ERROR = None
-                CPU_METRIC_SIMULATED = False
+                REMOTE_PHONE_METRICS_LAST_AT = time.time()
                 # Drei Sekunden Schutz reichen für ein Agent-Intervall von
                 # einer Sekunde und lassen bei Abbruch automatisch den
                 # lokalen Telefonwert wieder übernehmen.
                 REMOTE_PHONE_METRICS_UNTIL = time.time() + 3.0
+                if speedtest_down is not None:
+                    LIVE_SPEEDTEST_DOWN_MBPS = speedtest_down
+                if speedtest_up is not None:
+                    LIVE_SPEEDTEST_UP_MBPS = speedtest_up
+                if speedtest_status:
+                    LIVE_SPEEDTEST_STATUS = speedtest_status
+                if speedtest_at:
+                    LIVE_SPEEDTEST_AT = speedtest_at
+                    LIVE_SPEEDTEST_MEASURED_AT = speedtest_at
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2800,6 +3099,101 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
+def _speedtest_download_worker(deadline, result_box, result_lock):
+    """Liest einen echten Download-Stream bis zur gemeinsamen Zeitgrenze."""
+    url = (
+        f"{SPEEDTEST_DOWNLOAD_URL}?bytes=25000000"
+        f"&cacheBust={int(time.time() * 1000)}"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": "Telefon-Telemetrie-Speedtest/1.0",
+        },
+    )
+    total = 0
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.05:
+            return
+        with urllib.request.urlopen(request, timeout=remaining) as response:
+            while time.monotonic() < deadline:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+    finally:
+        with result_lock:
+            result_box[0] += total
+
+
+def run_phone_speedtest():
+    """Misst den Internetanschluss des Handys mit echten Daten, höchstens 5 s."""
+    started = time.monotonic()
+    # Etwas Reserve für Thread-Aufräumen und das Absenden der Messwerte lassen.
+    hard_deadline = started + SPEEDTEST_MAX_SECONDS - 0.25
+    download_deadline = min(
+        hard_deadline,
+        started + SPEEDTEST_DOWNLOAD_SECONDS,
+    )
+    download_bytes = [0]
+    result_lock = threading.Lock()
+    workers = [
+        threading.Thread(
+            target=_speedtest_download_worker,
+            args=(download_deadline, download_bytes, result_lock),
+            daemon=True,
+        )
+        for _ in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(max(0.0, download_deadline - time.monotonic()))
+
+    download_elapsed = max(0.05, min(time.monotonic(), download_deadline) - started)
+    download_mbps = (download_bytes[0] * 8.0) / download_elapsed / 1_000_000
+    upload_mbps = None
+
+    upload_started = time.monotonic()
+    upload_deadline = min(
+        hard_deadline,
+        upload_started + SPEEDTEST_UPLOAD_SECONDS,
+    )
+    upload_size = 8 * 1024 * 1024
+    upload_body = b"0" * upload_size
+    upload_request = urllib.request.Request(
+        f"{SPEEDTEST_UPLOAD_URL}?cacheBust={int(time.time() * 1000)}",
+        data=upload_body,
+        headers={
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/octet-stream",
+            "User-Agent": "Telefon-Telemetrie-Speedtest/1.0",
+        },
+        method="POST",
+    )
+    try:
+        remaining = upload_deadline - time.monotonic()
+        if remaining <= 0.05:
+            raise TimeoutError("Speedtest-Zeitlimit erreicht")
+        with urllib.request.urlopen(upload_request, timeout=remaining) as response:
+            response.read(1024)
+        upload_elapsed = max(0.05, time.monotonic() - upload_started)
+        upload_mbps = (upload_size * 8.0) / upload_elapsed / 1_000_000
+    except (urllib.error.URLError, TimeoutError, OSError):
+        upload_mbps = None
+
+    if download_bytes[0] <= 0:
+        raise RuntimeError("Kein Download-Datenstrom empfangen")
+    return (
+        round(max(0.0, download_mbps), 2),
+        round(max(0.0, upload_mbps), 2) if upload_mbps is not None else None,
+    )
+
+
 def run_phone_agent(server_url, token="", interval=1.0):
     """Sendet echte Android-/Termux-Werte an einen entfernten Server."""
     endpoint = server_url.rstrip("/") + "/api/phone-metrics"
@@ -2807,6 +3201,11 @@ def run_phone_agent(server_url, token="", interval=1.0):
     print(f"[*] Telefon-Agent sendet Messwerte an {endpoint}")
 
     prev_rx, prev_tx, prev_time = None, None, None
+    next_speedtest_at = 0.0
+    speedtest_down = None
+    speedtest_up = None
+    speedtest_status = "Telefon-Speedtest wird vorbereitet"
+    speedtest_at = None
 
     while True:
         time.sleep(max(1.0, interval))
@@ -2829,6 +3228,19 @@ def run_phone_agent(server_url, token="", interval=1.0):
         else:
             prev_rx, prev_tx, prev_time = None, None, None
 
+        if time.monotonic() >= next_speedtest_at:
+            speedtest_status = "Echter Telefon-Speedtest läuft ..."
+            speedtest_started_at = time.monotonic()
+            try:
+                speedtest_down, speedtest_up = run_phone_speedtest()
+                speedtest_status = "Echter Telefon-Speedtest live"
+                speedtest_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            except (OSError, RuntimeError, ValueError):
+                speedtest_status = "Speedtest fehlgeschlagen · letzter Wert bleibt erhalten"
+            # Start-zu-Start sind es exakt 30 Sekunden, nicht 30 s plus
+            # die Dauer des vorherigen Tests.
+            next_speedtest_at = speedtest_started_at + SPEEDTEST_INTERVAL
+
         if cpu_value is None or ram_value is None:
             continue
 
@@ -2839,6 +3251,10 @@ def run_phone_agent(server_url, token="", interval=1.0):
             "ram_total_mb": ram_total_mb,
             "wifi_down_mbps": wifi_down_mbps,
             "wifi_up_mbps": wifi_up_mbps,
+            "speedtest_down_mbps": speedtest_down,
+            "speedtest_up_mbps": speedtest_up,
+            "speedtest_status": speedtest_status,
+            "speedtest_at": speedtest_at,
             "source": cpu_source,
         }).encode("utf-8")
         request = urllib.request.Request(

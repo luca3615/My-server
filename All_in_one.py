@@ -1,4 +1,61 @@
+#!/usr/bin/env python3
+# Der Elternprozess bleibt schlank und startet den Serverprozess neu, wenn
+# Android oder ein anderer Fehler ihn beendet (SIGKILL ist nicht abfangbar).
+import os as _supervisor_os
+import subprocess as _supervisor_subprocess
+import sys as _supervisor_sys
+import time as _supervisor_time
+
+_SUPERVISOR_CHILD_ARG = "--_supervisor-child"
+if (
+    __name__ == "__main__"
+    and _SUPERVISOR_CHILD_ARG not in _supervisor_sys.argv
+):
+    _child_command = [
+        _supervisor_sys.executable,
+        _supervisor_os.path.abspath(__file__),
+        _SUPERVISOR_CHILD_ARG,
+        *_supervisor_sys.argv[1:],
+    ]
+    _retry_delay = 2
+    while True:
+        _started_at = _supervisor_time.monotonic()
+        try:
+            _child_result = _supervisor_subprocess.run(
+                _child_command,
+                check=False,
+            )
+        except KeyboardInterrupt:
+            print("\n[*] Server-Überwachung wird beendet.")
+            break
+
+        if _child_result.returncode == 0:
+            break
+
+        if _child_result.returncode < 0:
+            _exit_reason = f"Signal {-_child_result.returncode}"
+        else:
+            _exit_reason = f"Exit-Code {_child_result.returncode}"
+        print(
+            f"[WARNUNG] Serverprozess beendet ({_exit_reason}). "
+            f"Neustart in {_retry_delay}s.",
+            flush=True,
+        )
+
+        if _supervisor_time.monotonic() - _started_at >= 60:
+            _retry_delay = 2
+        try:
+            _supervisor_time.sleep(_retry_delay)
+        except KeyboardInterrupt:
+            print("\n[*] Server-Überwachung wird beendet.")
+            break
+        _retry_delay = min(30, _retry_delay * 2)
+
+    raise SystemExit(0)
+
 from collections import defaultdict, deque
+import atexit
+import base64
 import hashlib
 import hmac
 import http.server
@@ -16,13 +73,15 @@ import urllib.parse
 import urllib.request
 import subprocess
 import math
+import mimetypes
 
 try:
     import psutil
 except ImportError:
     psutil = None
 
-PORT = int(os.environ.get("PORT", 8080))
+PORT = int(os.environ.get("PORT", 8099))
+BIND_HOST = os.environ.get("BIND_HOST", "127.0.0.1")
 START_TIME = time.time()
 TOTAL_REQUESTS_COUNT = 0
 try:
@@ -46,6 +105,47 @@ status_code_stats = defaultdict(int)
 user_agent_stats = defaultdict(int)
 PEAK_RPS = 0
 VPN_CACHE = {}
+HTTP_ERROR_LOG_LOCK = threading.Lock()
+HTTP_ERROR_LOG_LAST_AT = 0.0
+TERMUX_WAKE_LOCK_ACTIVE = False
+
+# Pre-renderte, kleine Fehlerseiten: keine Animationen, Skripte oder
+# dynamischen HTML-Formatierungen auf häufigen Fehlerpfaden.
+LIGHT_ERROR_BODIES = {
+    403: (
+        b"<!doctype html><meta charset=utf-8><meta name=viewport "
+        b"content='width=device-width,initial-scale=1'><title>403</title>"
+        b"<body style='margin:0;background:#080610;color:#eee;font:16px system-ui;"
+        b"display:grid;place-items:center;min-height:100vh'><main><h1>403</h1>"
+        b"<p>Zugriff verweigert.</p></main></body>"
+    ),
+    404: (
+        b"<!doctype html><meta charset=utf-8><title>404</title>"
+        b"<body style='margin:2rem;background:#080610;color:#eee;font:16px system-ui'>"
+        b"<h1>404</h1><p>Seite nicht gefunden.</p></body>"
+    ),
+    429: (
+        b"<!doctype html><meta charset=utf-8><meta name=viewport "
+        b"content='width=device-width,initial-scale=1'><title>429</title>"
+        b"<body style='margin:0;background:#080610;color:#eee;font:16px system-ui;"
+        b"display:grid;place-items:center;min-height:100vh'><main><h1>429</h1>"
+        b"<p>Zu viele Anfragen. Bitte spaeter erneut versuchen.</p></main></body>"
+    ),
+    500: (
+        b"<!doctype html><meta charset=utf-8><title>500</title>"
+        b"<body style='margin:2rem;background:#080610;color:#eee;font:16px system-ui'>"
+        b"<h1>500</h1><p>Interner Serverfehler.</p></body>"
+    ),
+    503: (
+        b"<!doctype html><meta charset=utf-8><meta name=viewport "
+        b"content='width=device-width,initial-scale=1'><title>503 Service Unavailable</title>"
+        b"<body style='margin:0;background:#080610;color:#eee;font:16px system-ui;"
+        b"display:grid;place-items:center;min-height:100vh'><main><small>HTTP ERROR</small>"
+        b"<h1 style='font-size:4rem;margin:.4rem 0;color:#fbbf24'>503</h1>"
+        b"<h2>Service Unavailable</h2><p>Der Server ist ausgelastet. Bitte spaeter erneut versuchen.</p>"
+        b"</main></body>"
+    ),
+}
 
 TRAFFIC_HISTORY = deque([(0, 0, 0)] * 60, maxlen=60)
 LAST_SEC_TIMESTAMP = int(time.time())
@@ -64,6 +164,8 @@ IS_SCHEDULED_RESTART_TRIGGER = False
 
 GLOBAL_CPU = None
 GLOBAL_RAM = None
+PHONE_TEMPERATURE_C = None
+PHONE_TEMPERATURE_SOURCE = "Temperatursensor wird gesucht ..."
 PHONE_METRICS_SOURCE = "Initialisiere Telefonmessung ..."
 PHONE_METRICS_ERROR = None
 CPU_PREVIOUS_TOTAL = None
@@ -85,22 +187,49 @@ WIFI_IFACE_RE = re.compile(r"^(?:wlan|wifi|swlan|ap)\d*$", re.IGNORECASE)
 REMOTE_PHONE_METRICS_UNTIL = 0.0
 REMOTE_PHONE_METRICS_LAST_AT = 0.0
 PHONE_METRICS_TOKEN = os.environ.get("PHONE_METRICS_TOKEN", "")
-LIVE_SPEEDTEST_DOWN_MBPS = None
-LIVE_SPEEDTEST_UP_MBPS = None
-LIVE_SPEEDTEST_STATUS = "Telefon-Speedtest wird vorbereitet"
-LIVE_SPEEDTEST_AT = None
-LIVE_SPEEDTEST_MEASURED_AT = None
+MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
+MEDIA_TYPE_BY_EXTENSION = {
+    ".avif": "image",
+    ".gif": "image",
+    ".jpeg": "image",
+    ".jpg": "image",
+    ".png": "image",
+    ".webp": "image",
+    ".mp4": "video",
+    ".ogv": "video",
+    ".webm": "video",
+    ".test": "file",
+    ".bin": "file",
+    ".dat": "file",
+    ".zip": "file",
+    ".gz": "file",
+    ".txt": "file",
+}
+EMBEDDED_MEDIA_BASE64 = {}
 
-# Der Test läuft im Telefon-Agenten, damit wirklich die Verbindung des Handys
-# gemessen wird. Der Server-Speedtest hatte vorher versehentlich die Verbindung
-# des Servers gemessen. Cloudflare stellt dafür einen öffentlichen Test-Endpunkt
-# bereit; es wird kein speedtest-cli und kein künstlicher "Macro"-Test benötigt.
-SPEEDTEST_INTERVAL = 30
-SPEEDTEST_MAX_SECONDS = 5.0
-SPEEDTEST_DOWNLOAD_SECONDS = 3.0
-SPEEDTEST_UPLOAD_SECONDS = 1.7
-SPEEDTEST_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
-SPEEDTEST_UPLOAD_URL = "https://speed.cloudflare.com/__up"
+
+def ensure_embedded_media():
+    if not EMBEDDED_MEDIA_BASE64:
+        return
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        for media_name, encoded_data in EMBEDDED_MEDIA_BASE64.items():
+            if (
+                os.path.basename(media_name) != media_name
+                or os.path.splitext(media_name)[1].lower() not in MEDIA_TYPE_BY_EXTENSION
+            ):
+                continue
+            media_path = os.path.join(MEDIA_DIR, media_name)
+            if os.path.isfile(media_path):
+                continue
+            media_bytes = base64.b64decode(encoded_data, validate=True)
+            temporary_path = media_path + ".tmp"
+            with open(temporary_path, "wb") as media_file:
+                media_file.write(media_bytes)
+            os.replace(temporary_path, media_path)
+    except (OSError, ValueError) as error:
+        print(f"[WARNUNG] Eingebettete Medien konnten nicht erstellt werden: {error}")
+
 
 default_settings = {
     "total_requests": 0,
@@ -900,13 +1029,119 @@ def read_phone_memory():
         return None, None, None
 
 
+def read_phone_temperature():
+    """Liest die beste verfügbare Temperaturquelle des Android-Handys."""
+    candidates = []
+    thermal_root = "/sys/class/thermal"
+    try:
+        for zone_name in os.listdir(thermal_root):
+            if not zone_name.startswith("thermal_zone"):
+                continue
+            zone_path = os.path.join(thermal_root, zone_name)
+            try:
+                with open(os.path.join(zone_path, "temp"), "r", encoding="utf-8") as temp_file:
+                    raw_value = float(temp_file.read().strip())
+                sensor_type = zone_name
+                try:
+                    with open(os.path.join(zone_path, "type"), "r", encoding="utf-8") as type_file:
+                        sensor_type = type_file.read().strip() or zone_name
+                except (OSError, ValueError):
+                    pass
+
+                # Android liefert Thermalsensoren normalerweise in Milligrad,
+                # manche Geräte aber bereits in Grad oder Zehntelgrad.
+                temperature = raw_value / 1000.0 if abs(raw_value) > 200 else raw_value
+                if 0.0 <= temperature <= 100.0:
+                    sensor_label = sensor_type.lower()
+                    if "battery" in sensor_label:
+                        priority = 0
+                    elif "skin" in sensor_label:
+                        priority = 1
+                    elif "usb" in sensor_label or "charger" in sensor_label:
+                        priority = 2
+                    elif "cpu" in sensor_label or "soc" in sensor_label:
+                        priority = 3
+                    else:
+                        priority = 4
+                    candidates.append((priority, temperature, sensor_type))
+            except (OSError, ValueError):
+                continue
+    except (OSError, ValueError):
+        pass
+
+    if candidates:
+        _, temperature, sensor_type = sorted(candidates, key=lambda item: item[0])[0]
+        return round(temperature, 1), f"Android-Thermal: {sensor_type}"
+
+    # Viele Geräte sperren /sys/class/thermal für Termux, geben aber den
+    # Akkusensor unter /sys/class/power_supply frei. Diese Werte sind meist in
+    # Zehntelgrad Celsius (300 = 30,0 °C), nicht in Milligrad.
+    for battery_name in ("battery", "bms", "BAT0"):
+        battery_root = os.path.join("/sys/class/power_supply", battery_name)
+        for value_name in ("temp", "temp_now"):
+            try:
+                with open(os.path.join(battery_root, value_name), "r", encoding="utf-8") as temp_file:
+                    raw_value = float(temp_file.read().strip())
+                temperature = raw_value / 10.0 if abs(raw_value) > 100 else raw_value
+                if 0.0 <= temperature <= 100.0:
+                    return round(temperature, 1), f"Android-Akku: {battery_name}/{value_name}"
+            except (OSError, ValueError):
+                continue
+
+    # Termux:API ist optional, liefert auf manchen Geräten aber den einzigen
+    # freigegebenen Akku-/Telefonsensor.
+    try:
+        result = subprocess.run(
+            ["termux-battery-status"],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        battery_data = json.loads(result.stdout or "{}")
+        temperature = float(battery_data["temperature"])
+        if 0.0 <= temperature <= 100.0:
+            return round(temperature, 1), "Termux:API Akku"
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, json.JSONDecodeError):
+        pass
+
+    # Android selbst zeigt die Akkutemperatur über dumpsys in Zehntelgrad an.
+    # Das funktioniert auch dann, wenn Termux:API nicht installiert ist.
+    for command in (["dumpsys", "battery"], ["cmd", "thermalservice", "dump"]):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            output = result.stdout or ""
+            battery_match = re.search(
+                r"(?:temperature|mValue)\s*[:=]\s*([0-9]+(?:[.,][0-9]+)?)",
+                output,
+                re.IGNORECASE,
+            )
+            if battery_match:
+                raw_value = float(battery_match.group(1).replace(",", "."))
+                temperature = raw_value / 10.0 if raw_value > 100 else raw_value
+                if 0.0 <= temperature <= 100.0:
+                    return round(temperature, 1), f"Android: {' '.join(command)}"
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+
+    return None, "Android gibt keinen Temperaturwert frei (Agent/Termux prüfen)"
+
+
 def sys_monitor_worker():
     """Misst echte CPU-/RAM-/Netzwerkwerte des Telefons kontinuierlich."""
     global GLOBAL_CPU, GLOBAL_RAM, PHONE_METRICS_SOURCE, PHONE_METRICS_ERROR
     global GLOBAL_WIFI_DOWN_MBPS, GLOBAL_WIFI_UP_MBPS
     global WIFI_PREV_RX, WIFI_PREV_TX, WIFI_PREV_TIME
     global REMOTE_PHONE_METRICS_LAST_AT
+    global PHONE_TEMPERATURE_C, PHONE_TEMPERATURE_SOURCE
 
+    last_temperature_read_at = 0.0
     while True:
         time.sleep(1.0)
         remote_metrics_active = False
@@ -923,6 +1158,16 @@ def sys_monitor_worker():
                     PHONE_METRICS_ERROR = (
                         f"Telefon-Agent seit {int(remote_age)} s nicht erreichbar"
                     )
+
+        if (
+            not remote_metrics_active
+            and time.monotonic() - last_temperature_read_at >= 10.0
+        ):
+            last_temperature_read_at = time.monotonic()
+            temperature_c, temperature_source = read_phone_temperature()
+            with STATE_LOCK:
+                PHONE_TEMPERATURE_C = temperature_c
+                PHONE_TEMPERATURE_SOURCE = temperature_source
 
         # Echte Gesamt-CPU des Android-Geräts lesen. Einige Android-/Termux-
         # Versionen geben den Gesamtzähler nicht frei; dafür wird weiter unten
@@ -1133,85 +1378,175 @@ def is_client_allowed(headers):
         return False
     return True
 
+MAX_TRACKED_USER_AGENTS = 200
+MAX_TRACKED_ACTIVE_IPS = 3000
+MAX_TRACKED_IP_REQUESTS = 5000
+MAX_TRACKED_TEMP_BANS = 5000
+MAX_TRACKED_VPN_CACHE = 2000
+
+
+def cleanup_tracker_once(now=None):
+    """Prune expired and excess request metadata to keep memory bounded."""
+    now = time.time() if now is None else now
+    with STATE_LOCK:
+        expired = [
+            ip for ip, data in ACTIVE_IP_TRACKER.items()
+            if now - data.get("last_seen", 0) > 3600
+        ]
+        for ip in expired:
+            del ACTIVE_IP_TRACKER[ip]
+        if len(ACTIVE_IP_TRACKER) > MAX_TRACKED_ACTIVE_IPS:
+            oldest = sorted(
+                ACTIVE_IP_TRACKER,
+                key=lambda ip: ACTIVE_IP_TRACKER[ip].get("last_seen", 0),
+            )[:len(ACTIVE_IP_TRACKER) - MAX_TRACKED_ACTIVE_IPS]
+            for ip in oldest:
+                del ACTIVE_IP_TRACKER[ip]
+
+        # Remove expired temporary bans even if the client never reconnects.
+        expired_bans = [
+            ip for ip, expiry in TEMPORARY_BANS.items()
+            if expiry <= now
+        ]
+        for ip in expired_bans:
+            del TEMPORARY_BANS[ip]
+        if len(TEMPORARY_BANS) > MAX_TRACKED_TEMP_BANS:
+            earliest_expiring = sorted(
+                TEMPORARY_BANS,
+                key=TEMPORARY_BANS.get,
+            )[:len(TEMPORARY_BANS) - MAX_TRACKED_TEMP_BANS]
+            for ip in earliest_expiring:
+                del TEMPORARY_BANS[ip]
+
+        stale_ip_counts = [
+            ip for ip, timestamps in ip_request_counts.items()
+            if not timestamps or now - timestamps[-1] > 60
+        ]
+        for ip in stale_ip_counts:
+            del ip_request_counts[ip]
+        if len(ip_request_counts) > MAX_TRACKED_IP_REQUESTS:
+            least_recent_ip_counts = sorted(
+                ip_request_counts,
+                key=lambda ip: ip_request_counts[ip][-1] if ip_request_counts[ip] else 0,
+            )[:len(ip_request_counts) - MAX_TRACKED_IP_REQUESTS]
+            for ip in least_recent_ip_counts:
+                del ip_request_counts[ip]
+
+        stale_vpn = [
+            ip for ip, data in VPN_CACHE.items()
+            if now - data.get("time", 0) > 600
+        ]
+        for ip in stale_vpn:
+            del VPN_CACHE[ip]
+        if len(VPN_CACHE) > MAX_TRACKED_VPN_CACHE:
+            oldest_vpn = sorted(
+                VPN_CACHE,
+                key=lambda ip: VPN_CACHE[ip].get("time", 0),
+            )[:len(VPN_CACHE) - MAX_TRACKED_VPN_CACHE]
+            for ip in oldest_vpn:
+                del VPN_CACHE[ip]
+
+        if len(user_agent_stats) > MAX_TRACKED_USER_AGENTS:
+            top_agents = sorted(
+                user_agent_stats.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:MAX_TRACKED_USER_AGENTS]
+            user_agent_stats.clear()
+            user_agent_stats.update(top_agents)
+
+
 def cleanup_tracker():
     while True:
-        time.sleep(300)
-        now = time.time()
-        with STATE_LOCK:
-            expired = [ip for ip, data in ACTIVE_IP_TRACKER.items() if now - data.get("last_seen", 0) > 3600]
-            for ip in expired:
-                del ACTIVE_IP_TRACKER[ip]
+        time.sleep(60)
+        cleanup_tracker_once()
 
 cleanup_thread = threading.Thread(target=cleanup_tracker, daemon=True)
 cleanup_thread.start()
 
-BG_ANIMATION_JS = '''<canvas id="bgCanvas" style="position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; pointer-events:none; background:#020005;"></canvas>
+BG_ANIMATION_JS = '''<div class="plexusBg" aria-hidden="true">
+  <canvas id="plexusCanvas"></canvas>
+  <div class="plexusScan"></div>
+</div>
+<style>
+.plexusBg{position:fixed;inset:0;z-index:-1;overflow:hidden;background:radial-gradient(ellipse at 50% 0%,#170a2e 0%,#05030c 55%,#020005 100%);pointer-events:none;}
+.plexusBg canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+.plexusScan{position:absolute;left:0;right:0;height:140px;background:linear-gradient(180deg,rgba(192,132,252,0) 0%,rgba(192,132,252,0.12) 50%,rgba(192,132,252,0) 100%);animation:plexusScanMove 7s linear infinite;mix-blend-mode:screen;}
+@keyframes plexusScanMove{0%{top:-140px;}100%{top:100%;}}
+@media (prefers-reduced-motion: reduce){.plexusScan{animation:none;display:none;}}
+</style>
 <script>
-(function() {
-    const canvas = document.getElementById('bgCanvas');
-    const ctx = canvas.getContext('2d');
-    let width, height;
-
-    function resize() {
-        width = canvas.width = window.innerWidth;
-        height = canvas.height = window.innerHeight;
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    const particles = [];
-    const numParticles = 60;
-
-    for(let i=0; i<numParticles; i++) {
-        particles.push({
-            x: Math.random() * width,
-            y: Math.random() * height,
-            vx: (Math.random() - 0.5) * 1.2,
-            vy: (Math.random() - 0.5) * 1.2,
-            size: Math.random() * 2.5 + 1,
-            color: Math.random() > 0.5 ? 'rgba(192, 132, 252, ' : 'rgba(56, 189, 248, '
+(function(){
+  try{
+    var canvas=document.getElementById('plexusCanvas');
+    if(!canvas||!canvas.getContext) return;
+    var ctx=canvas.getContext('2d');
+    var reduceMotion=window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
+    var PALETTE=['#c084fc','#a855f7','#38bdf8','#f472b6','#34d399'];
+    var nodes=[];
+    function resize(){
+      W=window.innerWidth; H=window.innerHeight;
+      canvas.width=Math.floor(W*DPR); canvas.height=Math.floor(H*DPR);
+      canvas.style.width=W+'px'; canvas.style.height=H+'px';
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+      var target=Math.max(28,Math.min(70,Math.round((W*H)/26000)));
+      nodes=[];
+      for(var i=0;i<target;i++){
+        nodes.push({
+          x:Math.random()*W, y:Math.random()*H,
+          vx:(Math.random()-0.5)*0.35, vy:(Math.random()-0.5)*0.35,
+          r:1.2+Math.random()*1.8,
+          c:PALETTE[i%PALETTE.length],
+          pulse:Math.random()*Math.PI*2
         });
+      }
     }
-
-    let hueCounter = 0;
-
-    function animate() {
-        ctx.fillStyle = 'rgba(3, 0, 8, 0.25)';
-        ctx.fillRect(0, 0, width, height);
-
-        hueCounter += 0.01;
-
-        for(let i=0; i<particles.length; i++) {
-            let p = particles[i];
-            p.x += p.vx;
-            p.y += p.vy;
-
-            if(p.x < 0) p.x = width;
-            if(p.x > width) p.x = 0;
-            if(p.y < 0) p.y = height;
-            if(p.y > height) p.y = 0;
-
+    function step(t){
+      ctx.clearRect(0,0,W,H);
+      var linkDist=Math.min(150,W/6);
+      for(var i=0;i<nodes.length;i++){
+        var n=nodes[i];
+        n.x+=n.vx; n.y+=n.vy; n.pulse+=0.015;
+        if(n.x<0||n.x>W) n.vx*=-1;
+        if(n.y<0||n.y>H) n.vy*=-1;
+        n.x=Math.max(0,Math.min(W,n.x));
+        n.y=Math.max(0,Math.min(H,n.y));
+      }
+      for(var i=0;i<nodes.length;i++){
+        for(var j=i+1;j<nodes.length;j++){
+          var a=nodes[i], b=nodes[j];
+          var dx=a.x-b.x, dy=a.y-b.y;
+          var dist=Math.sqrt(dx*dx+dy*dy);
+          if(dist<linkDist){
+            var alpha=(1-dist/linkDist)*0.35;
+            ctx.strokeStyle='rgba(168,120,255,'+alpha.toFixed(3)+')';
+            ctx.lineWidth=1;
             ctx.beginPath();
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-            ctx.fillStyle = p.color + (0.4 + Math.sin(hueCounter + i) * 0.3) + ')';
-            ctx.fill();
-
-            for(let j=i+1; j<particles.length; j++) {
-                let p2 = particles[j];
-                let dist = Math.hypot(p.x - p2.x, p.y - p2.y);
-                if(dist < 120) {
-                    ctx.strokeStyle = `rgba(168, 85, 247, ${(1 - dist/120) * 0.2})`;
-                    ctx.lineWidth = 0.8;
-                    ctx.beginPath();
-                    ctx.moveTo(p.x, p.y);
-                    ctx.lineTo(p2.x, p2.y);
-                    ctx.stroke();
-                }
-            }
+            ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+            ctx.stroke();
+          }
         }
-        requestAnimationFrame(animate);
+      }
+      for(var i=0;i<nodes.length;i++){
+        var n=nodes[i];
+        var glow=1+Math.sin(n.pulse)*0.4;
+        ctx.beginPath();
+        ctx.fillStyle=n.c;
+        ctx.shadowColor=n.c;
+        ctx.shadowBlur=10*glow;
+        ctx.globalAlpha=0.85;
+        ctx.arc(n.x,n.y,n.r*glow,0,Math.PI*2);
+        ctx.fill();
+      }
+      ctx.shadowBlur=0; ctx.globalAlpha=1;
+      if(!reduceMotion) requestAnimationFrame(step);
     }
-    animate();
+    window.addEventListener('resize',resize,{passive:true});
+    resize();
+    requestAnimationFrame(step);
+    if(reduceMotion) step(0);
+  }catch(e){ /* Hintergrund-Animation ist rein dekorativ */ }
 })();
 </script>'''
 
@@ -1381,6 +1716,88 @@ PUBLIC_HTML = '''<!DOCTYPE html>
             to { transform: translateX(100%); }
         }
         .bar-value { width: 35px; text-align: right; font-family: ui-monospace, monospace; font-weight: 600; font-size: 12px; color: var(--text); }
+        .request-chart {
+            margin-top: 24px;
+            padding: 16px 14px 12px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            position: relative;
+        }
+        .request-chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .request-chart-title {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .request-chart-title::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            margin: 0 6px 1px 0;
+            background: var(--primary);
+            border-radius: 50%;
+        }
+        .request-chart-legend {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        .request-chart-legend::before {
+            content: '';
+            width: 18px;
+            height: 2px;
+            background: #94a3b8;
+            box-shadow: 0 0 8px rgba(148, 163, 184, 0.45);
+        }
+        #request-history-canvas {
+            display: block;
+            width: 100%;
+            height: 170px;
+            cursor: crosshair;
+            touch-action: none;
+            user-select: none;
+        }
+        .request-chart-tooltip {
+            position: absolute;
+            display: none;
+            pointer-events: none;
+            padding: 7px 9px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            background: rgba(8, 8, 18, 0.94);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+            color: var(--text);
+            font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+            max-width: calc(100% - 16px);
+            overflow-wrap: anywhere;
+            z-index: 2;
+        }
+        @media (max-width: 480px) {
+            .request-chart-header { align-items: flex-start; flex-direction: column; gap: 5px; }
+            #request-history-canvas { height: 145px; }
+        }
+        .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+        .media-item { min-width: 0; margin: 0; padding: 10px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: 14px; }
+        .media-item img, .media-item video { display: block; width: 100%; height: 220px; object-fit: contain; background: #050505; border-radius: 10px; }
+        .media-item figcaption { margin-top: 8px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+        .download-card { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 220px; text-decoration: none; color: var(--text); background: linear-gradient(145deg, rgba(59,130,246,0.15), rgba(16,185,129,0.12)); border: 1px dashed var(--border); border-radius: 10px; transition: transform 0.15s ease, background 0.15s ease; }
+        .download-card:hover { transform: translateY(-2px); background: linear-gradient(145deg, rgba(59,130,246,0.28), rgba(16,185,129,0.22)); }
+        .download-icon { font-size: 48px; line-height: 1; margin-bottom: 10px; }
+        .download-label { font-size: 14px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--success); }
+        .media-empty { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
     </style>
 </head>
 <body>
@@ -1422,10 +1839,90 @@ PUBLIC_HTML = '''<!DOCTYPE html>
                     <div class="bar-value" id="val-overload">0</div>
                 </div>
             </div>
+
+            <div class="request-chart">
+                <div class="request-chart-header">
+                    <div class="request-chart-title">Anfragenverlauf (letzte 60 Sekunden)</div>
+                    <div class="request-chart-legend">Alle Anfragen</div>
+                </div>
+                <canvas id="request-history-canvas" aria-label="Verlauf aller Anfragen"></canvas>
+                <div class="request-chart-tooltip" id="request-chart-tooltip"></div>
+            </div>
+        </div>
+
+        <div class="card" id="media-card">
+            <div class="header-row">
+                <h1>Bilder, Videos &amp; Downloads vom Server</h1>
+                <span class="status-pill">lokal geladen</span>
+            </div>
+            <p class="media-empty" id="media-empty">Medien werden vom Server geladen ...</p>
+            <div class="media-grid" id="media-gallery"></div>
         </div>
     </div>
 
     <script>
+        function loadMediaGallery() {
+            const gallery = document.getElementById('media-gallery');
+            const emptyMessage = document.getElementById('media-empty');
+
+            fetch('/api/media', { cache: 'no-store' })
+                .then(response => {
+                    if (!response.ok) throw new Error();
+                    return response.json();
+                })
+                .then(items => {
+                    gallery.replaceChildren();
+                    const mediaCard = document.getElementById('media-card');
+                    if (!Array.isArray(items) || items.length === 0) {
+                        // Kein Download, kein Bild, kein Video vorhanden -> ganze Karte entfernen.
+                        if (mediaCard) mediaCard.remove();
+                        return;
+                    }
+
+                    if (mediaCard) mediaCard.hidden = false;
+                    emptyMessage.hidden = true;
+                    items.forEach(item => {
+                        const figure = document.createElement('figure');
+                        figure.className = 'media-item';
+
+                        const mediaUrl = '/media/' + encodeURIComponent(item.name);
+                        if (item.type === 'file') {
+                            const link = document.createElement('a');
+                            link.href = mediaUrl;
+                            link.download = item.name;
+                            link.className = 'download-card';
+                            link.innerHTML = '<div class="download-icon">⬇</div><div class="download-label">Download</div>';
+                            const caption = document.createElement('figcaption');
+                            caption.textContent = item.name;
+                            figure.append(link, caption);
+                        } else {
+                            let player;
+                            if (item.type === 'image') {
+                                player = document.createElement('img');
+                                player.alt = item.name;
+                                player.loading = 'lazy';
+                                player.decoding = 'async';
+                            } else {
+                                player = document.createElement('video');
+                                player.controls = true;
+                                player.preload = 'none';
+                                player.playsInline = true;
+                            }
+                            player.src = mediaUrl;
+                            const caption = document.createElement('figcaption');
+                            caption.textContent = item.name;
+                            figure.append(player, caption);
+                        }
+                        gallery.appendChild(figure);
+                    });
+                })
+                .catch(() => {
+                    // Server nicht erreichbar oder Route nicht vorhanden -> Karte vorsorglich ausblenden.
+                    const mediaCard = document.getElementById('media-card');
+                    if (mediaCard) mediaCard.hidden = true;
+                });
+        }
+
         function setOfflineState() {
             document.getElementById('status-pill').className = 'status-pill offline';
             document.getElementById('status-text').innerText = 'Offline';
@@ -1436,8 +1933,181 @@ PUBLIC_HTML = '''<!DOCTYPE html>
             document.getElementById('status-text').innerText = 'Operational';
         }
 
+        const requestHistoryCanvas = document.getElementById('request-history-canvas');
+        const requestHistoryContext = requestHistoryCanvas.getContext('2d');
+        const requestChartTooltip = document.getElementById('request-chart-tooltip');
+        let requestHistory = [];
+        let requestSelectedIndex = null;
+
+        function resizeRequestChart() {
+            const ratio = Math.min(window.devicePixelRatio || 1, 2);
+            const rect = requestHistoryCanvas.getBoundingClientRect();
+            requestHistoryCanvas.width = Math.max(1, Math.floor(rect.width * ratio));
+            requestHistoryCanvas.height = Math.max(1, Math.floor(rect.height * ratio));
+            requestHistoryContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+            drawRequestChart();
+        }
+
+        function requestSampleValues(history) {
+            return (Array.isArray(history) ? history : []).map(sample => {
+                const values = Array.isArray(sample) ? sample : [];
+                return {
+                    total: Number(values[0] || 0) + Number(values[1] || 0) + Number(values[2] || 0),
+                    success: Number(values[0] || 0),
+                    blocked: Number(values[1] || 0),
+                    overload: Number(values[2] || 0)
+                };
+            });
+        }
+
+        function drawRequestChart() {
+            if (!requestHistoryCanvas || !requestHistoryContext) return;
+            const rect = requestHistoryCanvas.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+            if (!width || !height) return;
+
+            requestHistoryContext.clearRect(0, 0, width, height);
+            const samples = requestSampleValues(requestHistory);
+            const values = samples.map(sample => sample.total);
+            const maxValue = Math.max(1, ...values);
+            const padding = { top: 10, right: 8, bottom: 18, left: 26 };
+            const chartWidth = Math.max(1, width - padding.left - padding.right);
+            const chartHeight = Math.max(1, height - padding.top - padding.bottom);
+            const pointStep = chartWidth / Math.max(1, values.length - 1);
+
+            requestHistoryContext.font = '10px system-ui, sans-serif';
+            requestHistoryContext.textBaseline = 'middle';
+            requestHistoryContext.lineWidth = 1;
+            requestHistoryContext.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+            requestHistoryContext.fillStyle = '#68708e';
+
+            for (let i = 0; i <= 4; i++) {
+                const y = padding.top + chartHeight - (chartHeight * i / 4);
+                requestHistoryContext.beginPath();
+                requestHistoryContext.moveTo(padding.left, y);
+                requestHistoryContext.lineTo(width - padding.right, y);
+                requestHistoryContext.stroke();
+                const label = Math.round(maxValue * i / 4);
+                requestHistoryContext.textAlign = 'right';
+                requestHistoryContext.fillText(label, padding.left - 6, y);
+            }
+
+            requestHistoryContext.textBaseline = 'alphabetic';
+            requestHistoryContext.textAlign = 'left';
+            requestHistoryContext.fillText('60s', padding.left, height - 2);
+            requestHistoryContext.textAlign = 'right';
+            requestHistoryContext.fillText('jetzt', width - padding.right, height - 2);
+
+            if (!values.length) return;
+            const points = values.map((value, index) => ({
+                x: padding.left + index * pointStep,
+                y: padding.top + chartHeight - (value / maxValue) * chartHeight
+            }));
+
+            requestHistoryContext.beginPath();
+            points.forEach((point, index) => {
+                if (index === 0) requestHistoryContext.moveTo(point.x, point.y);
+                else requestHistoryContext.lineTo(point.x, point.y);
+            });
+            requestHistoryContext.strokeStyle = '#94a3b8';
+            requestHistoryContext.lineWidth = 2;
+            requestHistoryContext.shadowColor = 'rgba(148, 163, 184, 0.42)';
+            requestHistoryContext.shadowBlur = 8;
+            requestHistoryContext.stroke();
+            requestHistoryContext.shadowBlur = 0;
+
+            if (requestSelectedIndex !== null && points[requestSelectedIndex]) {
+                const selectedPoint = points[requestSelectedIndex];
+                requestHistoryContext.beginPath();
+                requestHistoryContext.moveTo(selectedPoint.x, padding.top);
+                requestHistoryContext.lineTo(selectedPoint.x, padding.top + chartHeight);
+                requestHistoryContext.strokeStyle = 'rgba(192, 132, 252, 0.72)';
+                requestHistoryContext.lineWidth = 1;
+                requestHistoryContext.setLineDash([4, 4]);
+                requestHistoryContext.stroke();
+                requestHistoryContext.setLineDash([]);
+
+                requestHistoryContext.beginPath();
+                requestHistoryContext.arc(selectedPoint.x, selectedPoint.y, 6, 0, Math.PI * 2);
+                requestHistoryContext.fillStyle = 'rgba(192, 132, 252, 0.22)';
+                requestHistoryContext.fill();
+                requestHistoryContext.beginPath();
+                requestHistoryContext.arc(selectedPoint.x, selectedPoint.y, 3.5, 0, Math.PI * 2);
+                requestHistoryContext.fillStyle = '#c084fc';
+                requestHistoryContext.shadowColor = '#c084fc';
+                requestHistoryContext.shadowBlur = 10;
+                requestHistoryContext.fill();
+                requestHistoryContext.shadowBlur = 0;
+            }
+
+        }
+
+        function showRequestTooltip(event) {
+            if (!requestHistory.length) return;
+            const rect = requestHistoryCanvas.getBoundingClientRect();
+            let clientX = event.clientX;
+            if (typeof clientX !== 'number' && event.touches && event.touches.length) {
+                clientX = event.touches[0].clientX;
+            }
+            if (typeof clientX !== 'number') return;
+            const padding = { left: 26, right: 8, top: 10, bottom: 18 };
+            const chartWidth = Math.max(1, rect.width - padding.left - padding.right);
+            const x = Math.max(padding.left, Math.min(rect.width - padding.right, clientX - rect.left));
+            const samples = requestSampleValues(requestHistory);
+            const index = Math.max(0, Math.min(
+                samples.length - 1,
+                Math.round(((x - padding.left) / chartWidth) * (samples.length - 1))
+            ));
+            const sample = samples[index];
+            requestSelectedIndex = index;
+            drawRequestChart();
+            requestChartTooltip.innerHTML =
+                '<strong>Alle Anfragen: ' + sample.total + '</strong><br>' +
+                '<span style="color:#34d399">Erlaubt: ' + sample.success + '</span> · ' +
+                '<span style="color:#f87171">Geblockt: ' + sample.blocked + '</span> · ' +
+                '<span style="color:#fbbf24">Überlastung: ' + sample.overload + '</span>';
+            requestChartTooltip.style.display = 'block';
+            const tooltipWidth = requestChartTooltip.offsetWidth || 170;
+            const tooltipHeight = requestChartTooltip.offsetHeight || 42;
+            const maxValue = Math.max(1, ...samples.map(entry => entry.total));
+            const chartHeight = Math.max(1, rect.height - padding.top - padding.bottom);
+            const selectedPointX = padding.left + ((index / Math.max(1, samples.length - 1)) * chartWidth);
+            const selectedPointY = padding.top + chartHeight - (sample.total / maxValue) * chartHeight;
+            const containerRect = requestHistoryCanvas.parentElement.getBoundingClientRect();
+            const pointXInContainer = rect.left - containerRect.left + selectedPointX;
+            const pointYInContainer = rect.top - containerRect.top + selectedPointY;
+            const left = Math.max(8, Math.min(containerRect.width - tooltipWidth - 8, pointXInContainer + 10));
+            let top = pointYInContainer - tooltipHeight - 10;
+            if (top < 8) top = pointYInContainer + 10;
+            top = Math.max(8, Math.min(containerRect.height - tooltipHeight - 8, top));
+            requestChartTooltip.style.left = left + 'px';
+            requestChartTooltip.style.top = top + 'px';
+        }
+
+        function hideRequestTooltip() {
+            requestSelectedIndex = null;
+            drawRequestChart();
+            requestChartTooltip.style.display = 'none';
+        }
+
+        window.addEventListener('resize', resizeRequestChart, { passive: true });
+        if (window.PointerEvent) {
+            requestHistoryCanvas.addEventListener('pointermove', showRequestTooltip, { passive: true });
+            requestHistoryCanvas.addEventListener('pointerdown', showRequestTooltip, { passive: true });
+            requestHistoryCanvas.addEventListener('pointerleave', hideRequestTooltip, { passive: true });
+            requestHistoryCanvas.addEventListener('pointercancel', hideRequestTooltip, { passive: true });
+        } else {
+            requestHistoryCanvas.addEventListener('mousemove', showRequestTooltip);
+            requestHistoryCanvas.addEventListener('mouseleave', hideRequestTooltip);
+            requestHistoryCanvas.addEventListener('click', showRequestTooltip);
+            requestHistoryCanvas.addEventListener('touchstart', showRequestTooltip, { passive: true });
+            requestHistoryCanvas.addEventListener('touchcancel', hideRequestTooltip, { passive: true });
+        }
+        resizeRequestChart();
+
         function updateStats() {
-            fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
+            return fetch('/api/stats', { mode: 'cors', cache: 'no-store' })
                 .then(res => {
                     if (!res.ok) throw new Error();
                     return res.json();
@@ -1448,6 +2118,8 @@ PUBLIC_HTML = '''<!DOCTYPE html>
                     document.getElementById('blocked-rps').innerText = data.blocked_rps !== undefined ? data.blocked_rps : 0;
 
                     if (data.history && Array.isArray(data.history) && data.history.length > 0) {
+                        requestHistory = data.history;
+                        drawRequestChart();
                         const latest = data.history[data.history.length - 1];
                         const succ = (latest && latest[0]) ? latest[0] : 0;
                         const block = (latest && latest[1]) ? latest[1] : 0;
@@ -1470,8 +2142,12 @@ PUBLIC_HTML = '''<!DOCTYPE html>
                 });
         }
         
+        // Der Homescreen bleibt live: Stats und Anfrage-Diagramm werden
+        // automatisch aktualisiert. Die 503-Seite besitzt bewusst keinen
+        // Reload-Timer und bleibt statisch.
         setInterval(updateStats, 500);
         updateStats();
+        loadMediaGallery();
     </script>
 </body>
 </html>'''.replace("__BG_ANIMATION__", BG_ANIMATION_JS)
@@ -1587,13 +2263,14 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
 
         <div class="card">
             <div class="header-row">
-                <h1>Live CPU / RAM (Handy)</h1>
+                <h1>Live CPU / RAM / Temperatur (Handy)</h1>
                 <a href="/" class="back-btn">← Zurück</a>
             </div>
             
-            <div class="stats-grid" style="grid-template-columns: 1fr 1fr;">
+            <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
                 <div class="stat-box"><div class="lbl">CPU-Auslastung (Handy)</div><div class="val" id="live-cpu" style="color:var(--success);">warte ...</div></div>
                 <div class="stat-box"><div class="lbl">RAM Auslastung (Telefon)</div><div class="val" id="live-ram" style="color:var(--success);">warte ...</div></div>
+                <div class="stat-box"><div class="lbl">Temperatur (Handy)</div><div class="val" id="live-temperature" style="color:#fbbf24;">warte ...</div></div>
             </div>
 
             <div class="chart-container">
@@ -1621,26 +2298,6 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                  <div id="wifi-tooltip" class="chart-tooltip"></div>
             </div>
         </div>
-        <div class="card">
-            <div class="header-row">
-                <h1>Live-Speedtest (Handy)</h1>
-                <span class="back-btn" style="cursor:default;">echt · max. 5 s · alle 30 s</span>
-            </div>
-            <div class="stats-grid" style="grid-template-columns: 1fr 1fr;">
-                <div class="stat-box">
-                    <div class="lbl">Echter Download</div>
-                    <div class="val" id="live-speedtest-down" style="color:var(--success);">warte ...</div>
-                </div>
-                <div class="stat-box">
-                    <div class="lbl">Echter Upload</div>
-                    <div class="val" id="live-speedtest-up" style="color:var(--danger);">warte ...</div>
-                </div>
-            </div>
-            <div id="line-speedtest-status" style="color:var(--text-muted);font-size:0.8rem;margin-top:8px;">
-                Echter Telefon-Speedtest wird vorbereitet ...
-            </div>
-        </div>
-
     </div>
 
     <script>
@@ -1830,136 +2487,6 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
         }
         canvasCpuRam.addEventListener('click', showCpuRamTooltip);
 
-        let phoneAgentSeen = false;
-        let browserSpeedtestRunning = false;
-        const browserSpeedtestMaxSeconds = 4.75;
-        const browserDownloadSeconds = 3.0;
-        const browserUploadSeconds = 1.7;
-
-        function updateSpeedtestDisplay(download, upload, status, measuredAt) {
-            document.getElementById('live-speedtest-down').innerText =
-                typeof download === 'number' ? download.toFixed(2) + ' Mbit/s' : 'warte ...';
-            document.getElementById('live-speedtest-up').innerText =
-                typeof upload === 'number' ? upload.toFixed(2) + ' Mbit/s' : 'warte ...';
-            document.getElementById('line-speedtest-status').innerText =
-                status + ' · echt vom Handy · max. 5 s · alle 30 s' +
-                (measuredAt ? ' · aktualisiert: ' + measuredAt : '');
-        }
-
-        async function browserDownloadStream(signal, deadline) {
-            let bytes = 0;
-            try {
-                const response = await fetch(
-                    'https://speed.cloudflare.com/__down?bytes=25000000&cacheBust=' +
-                    Date.now() + Math.random(),
-                    { cache: 'no-store', signal: signal }
-                );
-                if (!response.body) return 0;
-                const reader = response.body.getReader();
-                while (performance.now() < deadline) {
-                    const part = await reader.read();
-                    if (part.done) break;
-                    bytes += part.value.byteLength;
-                }
-                try { await reader.cancel(); } catch (_) {}
-            } catch (_) {
-                // Ein abgebrochener Stream ist bei der Zeitbegrenzung normal.
-            }
-            return bytes;
-        }
-
-        async function runBrowserSpeedtest() {
-            if (browserSpeedtestRunning || phoneAgentSeen) return;
-            browserSpeedtestRunning = true;
-            const started = performance.now();
-            const hardDeadline = started + browserSpeedtestMaxSeconds * 1000;
-            updateSpeedtestDisplay(null, null, 'Echter Handy-Speedtest läuft ...', null);
-
-            let downloadBytes = 0;
-            const downloadController = new AbortController();
-            const downloadTimer = setTimeout(
-                () => downloadController.abort(),
-                browserDownloadSeconds * 1000
-            );
-            try {
-                const streams = await Promise.all([
-                    browserDownloadStream(downloadController.signal,
-                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
-                    browserDownloadStream(downloadController.signal,
-                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
-                    browserDownloadStream(downloadController.signal,
-                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000)),
-                    browserDownloadStream(downloadController.signal,
-                        Math.min(hardDeadline, started + browserDownloadSeconds * 1000))
-                ]);
-                downloadBytes = streams.reduce((sum, value) => sum + value, 0);
-            } finally {
-                clearTimeout(downloadTimer);
-            }
-
-            const downloadElapsed = Math.max(
-                0.05,
-                (performance.now() - started) / 1000
-            );
-            const downloadMbps = downloadBytes > 0
-                ? (downloadBytes * 8) / downloadElapsed / 1000000
-                : null;
-
-            let uploadMbps = null;
-            const uploadStarted = performance.now();
-            const uploadDeadline = Math.min(
-                hardDeadline,
-                uploadStarted + browserUploadSeconds * 1000
-            );
-            if (uploadDeadline - performance.now() > 50) {
-                const uploadController = new AbortController();
-                const uploadTimer = setTimeout(
-                    () => uploadController.abort(),
-                    Math.max(1, uploadDeadline - performance.now())
-                );
-                try {
-                    const uploadBody = new Uint8Array(8 * 1024 * 1024);
-                    await fetch(
-                        'https://speed.cloudflare.com/__up?cacheBust=' + Date.now(),
-                        {
-                            method: 'POST',
-                            body: uploadBody,
-                            cache: 'no-store',
-                            signal: uploadController.signal
-                        }
-                    );
-                    const uploadElapsed = Math.max(
-                        0.05,
-                        (performance.now() - uploadStarted) / 1000
-                    );
-                    uploadMbps = (uploadBody.byteLength * 8) /
-                        uploadElapsed / 1000000;
-                } catch (_) {
-                    // Upload kann bei einer langsamen Leitung am Zeitlimit enden.
-                } finally {
-                    clearTimeout(uploadTimer);
-                }
-            }
-
-            const measuredAt = new Date().toLocaleTimeString();
-            if (downloadMbps !== null) {
-                updateSpeedtestDisplay(
-                    downloadMbps,
-                    uploadMbps,
-                    'Echter Handy-Speedtest live',
-                    measuredAt
-                );
-            } else {
-                updateSpeedtestDisplay(
-                    null,
-                    null,
-                    'Speedtest nicht erreichbar · nächster Versuch in 30 s',
-                    null
-                );
-            }
-            browserSpeedtestRunning = false;
-        }
-
         function fetchLiveCpuRam() {
             fetch('/api/cpu-ram', { cache: 'no-store' })
                 .then(res => res.json())
@@ -1971,32 +2498,16 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                     
                     document.getElementById('live-cpu').innerText = cpu === null ? 'nicht verfügbar' : cpu.toFixed(1) + '%';
                     document.getElementById('live-ram').innerText = ram === null ? 'nicht verfügbar' : ram.toFixed(1) + '%';
+                    const temperature = typeof data.phone_temperature_c === 'number'
+                        ? data.phone_temperature_c : null;
+                    document.getElementById('live-temperature').innerText =
+                        temperature === null ? 'nicht verfügbar' : temperature.toFixed(1) + ' °C';
+                    document.getElementById('live-temperature').title =
+                        data.phone_temperature_source || '';
                     document.getElementById('live-cpu').title = data.source || '';
                     document.getElementById('live-ram').title = data.source || '';
                     document.getElementById('live-wifi-down').innerText = wifiDown === null ? 'nicht verfügbar' : wifiDown.toFixed(2) + ' Mbit/s';
                     document.getElementById('live-wifi-up').innerText = wifiUp === null ? 'nicht verfügbar' : wifiUp.toFixed(2) + ' Mbit/s';
-                    const speedtestDown = typeof data.line_test_down_mbps === 'number' ? data.line_test_down_mbps : null;
-                    const speedtestUp = typeof data.line_test_up_mbps === 'number' ? data.line_test_up_mbps : null;
-                    if (data.remote_metrics_age_seconds !== null &&
-                        data.remote_metrics_age_seconds <= 5) {
-                        phoneAgentSeen = true;
-                    }
-                    if (speedtestDown !== null || speedtestUp !== null) {
-                        updateSpeedtestDisplay(
-                            speedtestDown,
-                            speedtestUp,
-                            data.line_test_status || 'Echter Handy-Speedtest live',
-                            data.line_test_at || ''
-                        );
-                    }
-                    const lineUpdated = data.line_test_at
-                        ? ' · aktualisiert: ' + data.line_test_at
-                        : '';
-                    if (speedtestDown === null && speedtestUp === null &&
-                        !browserSpeedtestRunning && !phoneAgentSeen) {
-                        document.getElementById('line-speedtest-status').innerText =
-                            'Browser-Speedtest wird gestartet · max. 5 s · alle 30 s';
-                    }
                     document.getElementById('wifi-source').innerText =
                         'Quelle: ' + (data.wifi_interfaces || 'nicht erkannt');
                     document.getElementById('live-wifi-down').title = data.wifi_interfaces || '';
@@ -2018,17 +2529,12 @@ LIVE_STATS_HTML = '''<!DOCTYPE html>
                 .catch(() => {
                     document.getElementById('live-cpu').innerText = 'nicht verfügbar';
                     document.getElementById('live-ram').innerText = 'nicht verfügbar';
+                    document.getElementById('live-temperature').innerText = 'nicht verfügbar';
                     document.getElementById('live-wifi-down').innerText = 'nicht verfügbar';
                     document.getElementById('live-wifi-up').innerText = 'nicht verfügbar';
-                    document.getElementById('live-speedtest-down').innerText = 'nicht verfügbar';
-                    document.getElementById('live-speedtest-up').innerText = 'nicht verfügbar';
-                    document.getElementById('line-speedtest-status').innerText = 'Leitungstest nicht erreichbar';
                     document.getElementById('wifi-source').innerText = 'WLAN-Messung nicht erreichbar';
                 });
         }
-
-        runBrowserSpeedtest();
-        setInterval(runBrowserSpeedtest, 30000);
 
         let wifiDownHistory = Array(60).fill(0);
         let wifiUpHistory = Array(60).fill(0);
@@ -2123,13 +2629,49 @@ h2 { color: #f87171; margin-top: 0; }
 <body>__BG_ANIMATION__<div class="card"><h2>🛡️ VPN / Proxy Erkannt</h2><p style="color: #8b92b2;">Der Zugriff über VPN-, Proxy- oder Hosting-Netzwerke ist nicht gestattet. Bitte deaktiviere dein VPN.</p></div></body></html>'''.replace("__BG_ANIMATION__", BG_ANIMATION_JS)
 
 OVERLOAD_HTML = '''<!DOCTYPE html>
-<html lang="de"><head><meta charset="UTF-8"><title>Server Überlastet</title>
+<html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Server ausgelastet</title>
 <style>
-body { background: #030008; color: #fff; font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-.card { background: rgba(20, 15, 35, 0.8); border: 1px solid rgba(251, 191, 36, 0.4); padding: 40px; border-radius: 20px; text-align: center; max-width: 400px; }
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; display:flex; justify-content:center; align-items:center; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#fff; overflow:hidden; position:relative; background:#05030c; }
+.pulseBg{position:fixed;inset:0;z-index:-1;overflow:hidden;background:radial-gradient(circle at 50% 55%, #1c1030 0%, #05030c 70%);}
+.pulseGlow{position:absolute; top:50%; left:50%; width:70vmax; height:70vmax; transform:translate(-50%,-50%); background:radial-gradient(circle, rgba(251,191,36,0.16), transparent 65%); animation:glowPulse 5s ease-in-out infinite;}
+@keyframes glowPulse{0%,100%{opacity:0.45; transform:translate(-50%,-50%) scale(0.9);}50%{opacity:1; transform:translate(-50%,-50%) scale(1.12);}}
+.pulseRing{position:absolute; top:50%; left:50%; border:2px solid rgba(251,191,36,0.4); border-radius:50%; transform:translate(-50%,-50%); width:10px; height:10px; animation:ringExpand 3.6s ease-out infinite;}
+.pulseRing.r2{animation-delay:1.2s; border-color:rgba(217,119,6,0.32);}
+.pulseRing.r3{animation-delay:2.4s; border-color:rgba(192,132,252,0.28);}
+@keyframes ringExpand{0%{width:10px;height:10px;opacity:0.9;}100%{width:150vmax;height:150vmax;opacity:0;}}
+.pulseParticle{position:absolute; bottom:-10px; width:3px; height:3px; border-radius:50%; background:rgba(251,191,36,0.75); box-shadow:0 0 6px rgba(251,191,36,0.8); animation:particleRise linear infinite;}
+@keyframes particleRise{0%{transform:translateY(0) scale(1); opacity:0;}8%{opacity:1;}100%{transform:translateY(-110vh) scale(0.3); opacity:0;}}
+@media (prefers-reduced-motion: reduce){.pulseRing,.pulseGlow,.pulseParticle{animation:none;}}
+.card { background: rgba(20, 15, 35, 0.82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(251, 191, 36, 0.4); padding: 40px; border-radius: 20px; text-align: center; max-width: 420px; box-shadow: 0 0 40px rgba(251,191,36,0.15); position:relative; z-index:1; }
 h2 { color: #fbbf24; margin-top: 0; }
 </style></head>
-<body>__BG_ANIMATION__<div class="card"><h2>⚠️ 503 Server Überlastet</h2><p style="color: #8b92b2;">Das maximale Anfragelimit wurde kurzzeitig überschritten. Bitte versuche es in wenigen Sekunden erneut.</p></div></body></html>'''.replace("__BG_ANIMATION__", BG_ANIMATION_JS)
+<body>
+<div class="pulseBg">
+  <div class="pulseGlow"></div>
+  <div class="pulseRing r1"></div>
+  <div class="pulseRing r2"></div>
+  <div class="pulseRing r3"></div>
+  <div class="pulseParticle" style="left:6%; animation-duration:7.5s; animation-delay:0s;"></div>
+  <div class="pulseParticle" style="left:14%; animation-duration:9.2s; animation-delay:1.1s;"></div>
+  <div class="pulseParticle" style="left:23%; animation-duration:6.8s; animation-delay:2.4s;"></div>
+  <div class="pulseParticle" style="left:33%; animation-duration:8.4s; animation-delay:0.6s;"></div>
+  <div class="pulseParticle" style="left:41%; animation-duration:7.1s; animation-delay:3.2s;"></div>
+  <div class="pulseParticle" style="left:52%; animation-duration:9.6s; animation-delay:1.8s;"></div>
+  <div class="pulseParticle" style="left:61%; animation-duration:6.5s; animation-delay:0.3s;"></div>
+  <div class="pulseParticle" style="left:69%; animation-duration:8.9s; animation-delay:2.9s;"></div>
+  <div class="pulseParticle" style="left:78%; animation-duration:7.7s; animation-delay:1.4s;"></div>
+  <div class="pulseParticle" style="left:86%; animation-duration:9.0s; animation-delay:0.9s;"></div>
+  <div class="pulseParticle" style="left:93%; animation-duration:6.9s; animation-delay:2.1s;"></div>
+</div>
+<div class="card">
+  <div style="font:700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color:#fbbf24; letter-spacing:.08em; margin-bottom:16px;">HTTP ERROR</div>
+  <div style="font:800 64px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color:#fbbf24; text-shadow:0 0 18px rgba(251,191,36,.35);">503</div>
+  <h2>Service Unavailable</h2>
+  <p style="color:#8b92b2; line-height:1.6;">Der Server ist aktuell ausgelastet und kann diese Anfrage nicht bearbeiten.</p>
+  <p style="color:#fbbf24; font-size:12px; margin-bottom:0;">Server-Limit erreicht · Bitte später manuell erneut versuchen.</p>
+</div>
+</body></html>'''
 
 COOLDOWN_HTML = '''<!DOCTYPE html>
 <html lang="de"><head><meta charset="UTF-8"><title>Rate Limit</title>
@@ -2301,6 +2843,62 @@ ADMIN_PANEL_HTML = '''<!DOCTYPE html>
                         __LOGS_TABLE__
                     </table>
                 </div>
+
+                <div class="section-box" style="margin-top:16px;">
+                    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px; font-weight: 600;">📊 Anfragen-Diagramm (auf einen Balken klicken für Details):</div>
+                    <div id="reqChartWrap" style="position:relative;">
+                        <div id="reqChart" style="display:flex; align-items:flex-end; gap:3px; height:120px; padding:4px 2px; overflow-x:auto;"></div>
+                    </div>
+                    <div id="reqChartDetail" style="display:none; margin-top:10px; background: rgba(5, 3, 10, 0.7); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-family: ui-monospace, monospace; font-size: 12px;"></div>
+                    <div id="reqChartEmpty" style="display:none; font-size:12px; color:var(--text-muted); text-align:center; padding:10px;">Noch keine Anfragen aufgezeichnet.</div>
+                </div>
+
+                <script>
+                (function(){
+                    var data = __LOGS_CHART_JSON__;
+                    var wrap = document.getElementById('reqChart');
+                    var detail = document.getElementById('reqChartDetail');
+                    var emptyMsg = document.getElementById('reqChartEmpty');
+                    if (!Array.isArray(data) || data.length === 0) {
+                        if (emptyMsg) emptyMsg.style.display = 'block';
+                        return;
+                    }
+                    var statusColor = function(status){
+                        var s = parseInt(status, 10);
+                        if (s >= 500) return 'linear-gradient(180deg, #f87171, #ef4444)';
+                        if (s >= 400) return 'linear-gradient(180deg, #fbbf24, #d97706)';
+                        if (s >= 300) return 'linear-gradient(180deg, #38bdf8, #0ea5e9)';
+                        return 'linear-gradient(180deg, #34d399, #10b981)';
+                    };
+                    data.forEach(function(entry, idx){
+                        var bar = document.createElement('div');
+                        bar.title = entry.time + ' – ' + entry.ip + ' – ' + entry.path;
+                        bar.style.cssText = 'flex:0 0 10px; width:10px; height:' + (30 + (idx % 7) * 12) + 'px; align-self:flex-end; border-radius:4px 4px 0 0; cursor:pointer; background:' + statusColor(entry.status) + '; opacity:0.85; transition:opacity 0.15s, transform 0.15s;';
+                        bar.addEventListener('mouseenter', function(){ bar.style.opacity = '1'; bar.style.transform = 'scaleY(1.05)'; });
+                        bar.addEventListener('mouseleave', function(){ bar.style.opacity = '0.85'; bar.style.transform = 'none'; });
+                        bar.addEventListener('click', function(){
+                            detail.style.display = 'block';
+                            detail.replaceChildren();
+                            var title = document.createElement('b');
+                            title.style.color = 'var(--primary)';
+                            title.textContent = 'Anfrage-Details';
+                            var lines = [
+                                'Zeit: ' + entry.time,
+                                'IP: ' + entry.ip,
+                                'Pfad: ' + entry.path,
+                                'Status: ' + entry.status
+                            ];
+                            detail.appendChild(title);
+                            lines.forEach(function(line){
+                                detail.appendChild(document.createElement('br'));
+                                detail.appendChild(document.createTextNode(line));
+                            });
+                        });
+                        wrap.appendChild(bar);
+                    });
+                    wrap.scrollLeft = wrap.scrollWidth;
+                })();
+                </script>
             </div>
 
             <div class="tab-content __CONTENT_GEO_ACTIVE__">
@@ -2539,14 +3137,157 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
         self.rfile = _CountingReader(self.rfile)
         self.wfile = _CountingWriter(self.wfile)
 
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionError, TimeoutError):
+            # Clients sometimes leave while a response is still being sent.
+            # That is normal for browsers and media players; stop this request
+            # quietly instead of letting the server print a traceback.
+            self.close_connection = True
+
     def log_message(self, format, *args):
         return
+
+    def send_light_error(self, code, retry_after=None):
+        body = LIGHT_ERROR_BODIES.get(
+            code,
+            b"<!doctype html><meta charset=utf-8><title>HTTP Error</title>"
+            b"<body style='margin:2rem;background:#080610;color:#eee;font:16px system-ui'>"
+            b"<h1>HTTP Error</h1></body>",
+        )
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if retry_after is not None:
+            self.send_header("Retry-After", str(max(1, int(retry_after))))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+
+    def send_error(self, code, message=None, explain=None):
+        # BaseHTTPRequestHandler baut standardmäßig pro Fehler eine große
+        # dynamische HTML-Seite. Nutze stattdessen die vorgefertigten Bytes.
+        self.send_light_error(code)
 
     def get_client_ip(self):
         forwarded = self.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
         return self.client_address[0]
+
+    def serve_media_asset(self, path):
+        media_name = urllib.parse.unquote(path[len("/media/"):])
+        if (
+            not media_name
+            or media_name in {".", ".."}
+            or "/" in media_name
+            or "\\" in media_name
+        ):
+            self.send_error(404)
+            return
+
+        extension = os.path.splitext(media_name)[1].lower()
+        if extension not in MEDIA_TYPE_BY_EXTENSION:
+            self.send_error(404)
+            return
+
+        media_root = os.path.realpath(MEDIA_DIR)
+        file_path = os.path.realpath(os.path.join(media_root, media_name))
+        media_data = None
+        try:
+            if os.path.commonpath((media_root, file_path)) != media_root:
+                self.send_error(404)
+                return
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(file_path)
+            file_size = os.path.getsize(file_path)
+        except (OSError, ValueError):
+            encoded_data = EMBEDDED_MEDIA_BASE64.get(media_name)
+            if encoded_data is None:
+                self.send_error(404)
+                return
+            try:
+                media_data = base64.b64decode(encoded_data, validate=True)
+            except (ValueError, TypeError):
+                self.send_error(500, "Eingebettete Mediendatei ist beschädigt")
+                return
+            file_size = len(media_data)
+
+        start = 0
+        end = file_size - 1
+        status_code = 200
+        range_header = self.headers.get("Range", "")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+            if not match:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            range_start, range_end = match.groups()
+            if not range_start:
+                suffix_length = int(range_end or "0")
+                if suffix_length <= 0 or file_size <= 0:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                start = max(0, file_size - suffix_length)
+            else:
+                start = int(range_start)
+                end = min(int(range_end), file_size - 1) if range_end else file_size - 1
+
+            if start >= file_size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status_code = 206
+
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        content_length = max(0, end - start + 1)
+        media_kind = MEDIA_TYPE_BY_EXTENSION.get(extension, "file")
+        disposition = "attachment" if media_kind == "file" else "inline"
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("Content-Disposition", f'{disposition}; filename="{media_name}"')
+        if status_code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.end_headers()
+
+        try:
+            remaining = content_length
+            if media_data is not None:
+                offset = start
+                while remaining > 0:
+                    chunk = media_data[offset:offset + min(64 * 1024, remaining)]
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    offset += len(chunk)
+                    remaining -= len(chunk)
+            else:
+                with open(file_path, "rb") as media_file:
+                    media_file.seek(start)
+                    while remaining > 0:
+                        chunk = media_file.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def do_GET(self):
         global TOTAL_REQUESTS_COUNT, PEAK_RPS
@@ -2558,10 +3299,15 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
 
         with STATE_LOCK:
             TOTAL_REQUESTS_COUNT += 1
-            if TOTAL_REQUESTS_COUNT % 20 == 0:
-                save_settings()
+            persist_total_requests = TOTAL_REQUESTS_COUNT % 250 == 0
+        # Persist far less often than every 20th request and outside the state
+        # lock. This reduces storage writes and keeps other requests moving.
+        if persist_total_requests:
+            save_settings()
 
         if path == "/api/stats":
+            # Dieser interne Endpunkt wird vor den normalen Routenprüfungen
+            # behandelt, zählt aber trotzdem als erlaubte Anfrage.
             update_traffic_history("success")
             with STATE_LOCK:
                 while REQUEST_TIMESTAMPS and now - REQUEST_TIMESTAMPS[0] > WINDOW_SIZE:
@@ -2584,6 +3330,9 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/api/cpu-ram":
+            # Auch der Telemetrie-Endpunkt verlässt die Funktion vor dem
+            # allgemeinen success-Aufruf weiter unten.
+            update_traffic_history("success")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -2597,6 +3346,8 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 metrics = {
                     "cpu": GLOBAL_CPU,
                     "ram": GLOBAL_RAM,
+                    "phone_temperature_c": PHONE_TEMPERATURE_C,
+                    "phone_temperature_source": PHONE_TEMPERATURE_SOURCE,
                     "wifi_down_mbps": GLOBAL_WIFI_DOWN_MBPS,
                     "wifi_up_mbps": GLOBAL_WIFI_UP_MBPS,
                     "wan_capacity_mbps": WAN_CAPACITY_MBPS,
@@ -2616,11 +3367,6 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                         if GLOBAL_WIFI_UP_MBPS is not None
                         else 0.0
                     ),
-                    "line_test_down_mbps": LIVE_SPEEDTEST_DOWN_MBPS,
-                    "line_test_up_mbps": LIVE_SPEEDTEST_UP_MBPS,
-                    "line_test_status": LIVE_SPEEDTEST_STATUS,
-                    "line_test_at": LIVE_SPEEDTEST_AT,
-                    "line_test_measured_at": LIVE_SPEEDTEST_MEASURED_AT,
                     "wifi_interfaces": WIFI_INTERFACES_SOURCE,
                     "source": PHONE_METRICS_SOURCE,
                     "error": PHONE_METRICS_ERROR,
@@ -2635,10 +3381,7 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             if client_ip in BANNED_IPS:
                 update_traffic_history("blocked")
                 status_code_stats[403] += 1
-                self.send_response(403)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(BANNED_HTML.replace("__REASON_TEXT__", "Deine IP wurde dauerhaft gesperrt.").encode("utf-8"))
+                self.send_light_error(403)
                 return
 
             if client_ip in TEMPORARY_BANS:
@@ -2646,13 +3389,23 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                     update_traffic_history("blocked")
                     status_code_stats[429] += 1
                     remaining = int(TEMPORARY_BANS[client_ip] - now)
-                    self.send_response(429)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(COOLDOWN_HTML.replace("__REMAINING__", str(max(1, remaining))).encode("utf-8"))
+                    self.send_light_error(429, retry_after=max(1, remaining))
                     return
                 else:
                     del TEMPORARY_BANS[client_ip]
+
+            # Serverweites Limit: zählt angenommene UND blockierte Anfragen der
+            # aktuellen Sekunde zusammen. Wird die Summe erreicht, zeigt der
+            # Server den Überlast-Screen an - egal ob diese konkrete Anfrage
+            # sonst angenommen oder pro IP geblockt worden wäre. Beispiel:
+            # 5 angenommene + 45 blockierte Anfragen bei Limit 50 lösen den
+            # Screen aus.
+            if SERVER_LIMIT > 0 and (CURRENT_SEC_SUCCESS + CURRENT_SEC_BLOCKED) >= SERVER_LIMIT:
+                update_traffic_history("overload")
+                status_code_stats[503] += 1
+                remaining_wait = max(1, int(round(THROTTLE_DELAY)))
+                self.send_light_error(503, retry_after=remaining_wait)
+                return
 
             if client_ip not in WHITELISTED_IPS:
                 timestamps = ip_request_counts[client_ip]
@@ -2664,43 +3417,75 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                         TEMPORARY_BANS[client_ip] = now + BAN_DURATION
                     update_traffic_history("blocked")
                     status_code_stats[429] += 1
-                    self.send_response(429)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(COOLDOWN_HTML.replace("__REMAINING__", str(BAN_DURATION)).encode("utf-8"))
+                    self.send_light_error(429, retry_after=BAN_DURATION)
                     return
-
-            if SERVER_LIMIT > 0 and len(REQUEST_TIMESTAMPS) > SERVER_LIMIT:
-                update_traffic_history("overload")
-                status_code_stats[503] += 1
-                self.send_response(503)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(OVERLOAD_HTML.encode("utf-8"))
-                return
 
             if BLOCK_VPN and is_ip_vpn_or_proxy(client_ip):
                 update_traffic_history("blocked")
                 status_code_stats[403] += 1
-                self.send_response(403)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(VPN_WARN_HTML.encode("utf-8"))
+                self.send_light_error(403)
                 return
 
             if MAINTENANCE_MODE and not path.startswith("/admin"):
+                update_traffic_history("blocked")
                 status_code_stats[503] += 1
-                self.send_response(503)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(MAINTENANCE_HTML.encode("utf-8"))
+                self.send_light_error(503)
                 return
 
-        ua = self.headers.get("User-Agent", "Unbekannt")
-        user_agent_stats[ua] += 1
+        # Jede Anfrage, die die Schutzregeln passiert, wird als erlaubt
+        # aufgezeichnet. Geblockte und überlastete Anfragen wurden oben an
+        # ihrer jeweiligen Rückgabestelle bereits erfasst.
+        update_traffic_history("success")
+        ua = (self.headers.get("User-Agent", "Unbekannt") or "Unbekannt")[:512]
         with STATE_LOCK:
-            ACTIVE_IP_TRACKER[client_ip] = {"last_seen": now, "path": path}
-            RECENT_LOGS.appendleft((time.strftime("%H:%M:%S"), client_ip, path, 200))
+            if ua in user_agent_stats or len(user_agent_stats) < MAX_TRACKED_USER_AGENTS:
+                user_agent_stats[ua] += 1
+            stored_path = path[:256]
+            ACTIVE_IP_TRACKER[client_ip] = {"last_seen": now, "path": stored_path}
+            RECENT_LOGS.appendleft((time.strftime("%H:%M:%S"), client_ip, stored_path, 200))
+
+        if path == "/api/media":
+            media_items = []
+            seen_names = set()
+            try:
+                with os.scandir(MEDIA_DIR) as entries:
+                    for entry in entries:
+                        extension = os.path.splitext(entry.name)[1].lower()
+                        media_type = MEDIA_TYPE_BY_EXTENSION.get(extension)
+                        if media_type and entry.is_file(follow_symlinks=False):
+                            media_items.append({
+                                "name": entry.name,
+                                "type": media_type,
+                            })
+                            seen_names.add(entry.name)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                if not EMBEDDED_MEDIA_BASE64:
+                    self.send_error(500, "Medienordner kann nicht gelesen werden")
+                    return
+
+            for media_name in EMBEDDED_MEDIA_BASE64:
+                extension = os.path.splitext(media_name)[1].lower()
+                media_type = MEDIA_TYPE_BY_EXTENSION.get(extension)
+                if (
+                    media_type
+                    and os.path.basename(media_name) == media_name
+                    and media_name not in seen_names
+                ):
+                    media_items.append({"name": media_name, "type": media_type})
+
+            media_items.sort(key=lambda item: item["name"].casefold())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(json.dumps(media_items).encode("utf-8"))
+            return
+
+        if path.startswith("/media/"):
+            self.serve_media_asset(path)
+            return
 
         if path == "/":
             status_code_stats[200] += 1
@@ -2744,9 +3529,19 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             tab = query_params.get("tab", ["logs"])[0]
             
             logs_html = ""
+            logs_chart_data = []
             with STATE_LOCK:
                 for log in RECENT_LOGS:
                     logs_html += f"<tr><td>{log[0]}</td><td>{log[1]}</td><td>{log[2]}</td><td><span style='color:var(--success);'>{log[3]}</span></td></tr>"
+                    logs_chart_data.append({
+                        "time": log[0],
+                        "ip": log[1],
+                        "path": log[2],
+                        "status": log[3],
+                    })
+            # Chronologisch aufsteigend fuers Diagramm (aeltester Balken zuerst).
+            logs_chart_data.reverse()
+            logs_json = json.dumps(logs_chart_data, ensure_ascii=False).replace("</", "<\\/")
 
             geo_html = ""
             with STATE_LOCK:
@@ -2797,6 +3592,7 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             panel = panel.replace("__CONTENT_SECURITY_ACTIVE__", "active" if tab == "security" else "")
 
             panel = panel.replace("__LOGS_TABLE__", logs_html)
+            panel = panel.replace("__LOGS_CHART_JSON__", logs_json)
             panel = panel.replace("__GEO_TABLE__", geo_html)
             panel = panel.replace("__BANNED_LIST__", banned_list_html)
             panel = panel.replace("__TEMP_BANNED_LIST__", temp_banned_html)
@@ -2892,10 +3688,7 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         status_code_stats[404] += 1
-        self.send_response(404)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"404 Not Found")
+        self.send_light_error(404)
 
     def do_POST(self):
         global ADMIN_PASSWORD_HASH
@@ -2909,8 +3702,7 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
             global GLOBAL_CPU, GLOBAL_RAM, PHONE_METRICS_SOURCE, PHONE_METRICS_ERROR, REMOTE_PHONE_METRICS_UNTIL
             global GLOBAL_WIFI_DOWN_MBPS, GLOBAL_WIFI_UP_MBPS, WIFI_INTERFACES_SOURCE
             global REMOTE_PHONE_METRICS_LAST_AT
-            global LIVE_SPEEDTEST_DOWN_MBPS, LIVE_SPEEDTEST_UP_MBPS
-            global LIVE_SPEEDTEST_STATUS, LIVE_SPEEDTEST_AT, LIVE_SPEEDTEST_MEASURED_AT
+            global PHONE_TEMPERATURE_C, PHONE_TEMPERATURE_SOURCE
             supplied_token = self.headers.get("X-Phone-Metrics-Token", "")
             if PHONE_METRICS_TOKEN and supplied_token != PHONE_METRICS_TOKEN:
                 self.send_response(401)
@@ -2930,18 +3722,12 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 wifi_down_mbps = round(max(0.0, float(wifi_down_mbps)), 2) if wifi_down_mbps is not None else None
                 wifi_up_mbps = round(max(0.0, float(wifi_up_mbps)), 2) if wifi_up_mbps is not None else None
                 agent_source = phone_data.get("source")
-                speedtest_down = phone_data.get("speedtest_down_mbps")
-                speedtest_up = phone_data.get("speedtest_up_mbps")
-                speedtest_down = (
-                    round(max(0.0, float(speedtest_down)), 2)
-                    if speedtest_down is not None else None
+                temperature_c = phone_data.get("temperature_c")
+                temperature_c = (
+                    round(float(temperature_c), 1)
+                    if temperature_c is not None else None
                 )
-                speedtest_up = (
-                    round(max(0.0, float(speedtest_up)), 2)
-                    if speedtest_up is not None else None
-                )
-                speedtest_status = str(phone_data.get("speedtest_status") or "").strip()
-                speedtest_at = str(phone_data.get("speedtest_at") or "").strip()
+                temperature_source = str(phone_data.get("temperature_source") or "").strip()
             except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2954,6 +3740,10 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 GLOBAL_RAM = ram_value
                 GLOBAL_WIFI_DOWN_MBPS = wifi_down_mbps
                 GLOBAL_WIFI_UP_MBPS = wifi_up_mbps
+                if temperature_c is not None and 0.0 <= temperature_c <= 100.0:
+                    PHONE_TEMPERATURE_C = temperature_c
+                if temperature_source:
+                    PHONE_TEMPERATURE_SOURCE = temperature_source
                 WIFI_INTERFACES_SOURCE = "Telefon-Agent"
                 PHONE_METRICS_SOURCE = f"Telefon-Agent ({agent_source})" if agent_source else "Telefon-Agent"
                 PHONE_METRICS_ERROR = None
@@ -2962,16 +3752,6 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
                 # einer Sekunde und lassen bei Abbruch automatisch den
                 # lokalen Telefonwert wieder übernehmen.
                 REMOTE_PHONE_METRICS_UNTIL = time.time() + 3.0
-                if speedtest_down is not None:
-                    LIVE_SPEEDTEST_DOWN_MBPS = speedtest_down
-                if speedtest_up is not None:
-                    LIVE_SPEEDTEST_UP_MBPS = speedtest_up
-                if speedtest_status:
-                    LIVE_SPEEDTEST_STATUS = speedtest_status
-                if speedtest_at:
-                    LIVE_SPEEDTEST_AT = speedtest_at
-                    LIVE_SPEEDTEST_MEASURED_AT = speedtest_at
-
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
@@ -3098,101 +3878,49 @@ class SecurityHandler(http.server.SimpleHTTPRequestHandler):
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    block_on_close = False
+    allow_reuse_address = True
+    request_queue_size = 128
 
-def _speedtest_download_worker(deadline, result_box, result_lock):
-    """Liest einen echten Download-Stream bis zur gemeinsamen Zeitgrenze."""
-    url = (
-        f"{SPEEDTEST_DOWNLOAD_URL}?bytes=25000000"
-        f"&cacheBust={int(time.time() * 1000)}"
-    )
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Cache-Control": "no-cache",
-            "User-Agent": "Telefon-Telemetrie-Speedtest/1.0",
-        },
-    )
-    total = 0
-    try:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.05:
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        # Begrenze die Zahl gleichzeitiger Anfrage-Threads. Ohne Limit kann
+        # eine Anfrageflut auf Android/Termux den Speicher erschöpfen und dazu
+        # führen, dass Android den gesamten Python-Prozess mit SIGKILL beendet.
+        self._worker_slots = threading.BoundedSemaphore(8)
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+
+    def process_request(self, request, client_address):
+        # Bei voller Auslastung warten neue Verbindungen in der Socket-Queue,
+        # statt weitere Python-Threads und deren Speicher zu erzeugen.
+        self._worker_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+    def handle_error(self, request, client_address):
+        global HTTP_ERROR_LOG_LAST_AT
+        error = sys.exc_info()[1]
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            # Broken pipes and resets are expected when a client cancels a
+            # request. Keep the server alive without flooding the terminal.
             return
-        with urllib.request.urlopen(request, timeout=remaining) as response:
-            while time.monotonic() < deadline:
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-    except (urllib.error.URLError, TimeoutError, OSError):
-        pass
-    finally:
-        with result_lock:
-            result_box[0] += total
-
-
-def run_phone_speedtest():
-    """Misst den Internetanschluss des Handys mit echten Daten, höchstens 5 s."""
-    started = time.monotonic()
-    # Etwas Reserve für Thread-Aufräumen und das Absenden der Messwerte lassen.
-    hard_deadline = started + SPEEDTEST_MAX_SECONDS - 0.25
-    download_deadline = min(
-        hard_deadline,
-        started + SPEEDTEST_DOWNLOAD_SECONDS,
-    )
-    download_bytes = [0]
-    result_lock = threading.Lock()
-    workers = [
-        threading.Thread(
-            target=_speedtest_download_worker,
-            args=(download_deadline, download_bytes, result_lock),
-            daemon=True,
-        )
-        for _ in range(4)
-    ]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(max(0.0, download_deadline - time.monotonic()))
-
-    download_elapsed = max(0.05, min(time.monotonic(), download_deadline) - started)
-    download_mbps = (download_bytes[0] * 8.0) / download_elapsed / 1_000_000
-    upload_mbps = None
-
-    upload_started = time.monotonic()
-    upload_deadline = min(
-        hard_deadline,
-        upload_started + SPEEDTEST_UPLOAD_SECONDS,
-    )
-    upload_size = 8 * 1024 * 1024
-    upload_body = b"0" * upload_size
-    upload_request = urllib.request.Request(
-        f"{SPEEDTEST_UPLOAD_URL}?cacheBust={int(time.time() * 1000)}",
-        data=upload_body,
-        headers={
-            "Cache-Control": "no-cache",
-            "Content-Type": "application/octet-stream",
-            "User-Agent": "Telefon-Telemetrie-Speedtest/1.0",
-        },
-        method="POST",
-    )
-    try:
-        remaining = upload_deadline - time.monotonic()
-        if remaining <= 0.05:
-            raise TimeoutError("Speedtest-Zeitlimit erreicht")
-        with urllib.request.urlopen(upload_request, timeout=remaining) as response:
-            response.read(1024)
-        upload_elapsed = max(0.05, time.monotonic() - upload_started)
-        upload_mbps = (upload_size * 8.0) / upload_elapsed / 1_000_000
-    except (urllib.error.URLError, TimeoutError, OSError):
-        upload_mbps = None
-
-    if download_bytes[0] <= 0:
-        raise RuntimeError("Kein Download-Datenstrom empfangen")
-    return (
-        round(max(0.0, download_mbps), 2),
-        round(max(0.0, upload_mbps), 2) if upload_mbps is not None else None,
-    )
-
+        # Unexpected request failures remain visible, but repeated tracebacks
+        # can flood Termux and waste CPU/storage. Emit at most one short line
+        # every 15 seconds; status codes and responses are still recorded.
+        now = time.monotonic()
+        with HTTP_ERROR_LOG_LOCK:
+            if now - HTTP_ERROR_LOG_LAST_AT < 15.0:
+                return
+            HTTP_ERROR_LOG_LAST_AT = now
+        print(f"[HTTP-Fehler] Anfragefehler: {type(error).__name__}")
 
 def run_phone_agent(server_url, token="", interval=1.0):
     """Sendet echte Android-/Termux-Werte an einen entfernten Server."""
@@ -3201,16 +3929,11 @@ def run_phone_agent(server_url, token="", interval=1.0):
     print(f"[*] Telefon-Agent sendet Messwerte an {endpoint}")
 
     prev_rx, prev_tx, prev_time = None, None, None
-    next_speedtest_at = 0.0
-    speedtest_down = None
-    speedtest_up = None
-    speedtest_status = "Telefon-Speedtest wird vorbereitet"
-    speedtest_at = None
-
     while True:
         time.sleep(max(1.0, interval))
         cpu_value, cpu_source = read_phone_cpu_percent()
         ram_value, ram_used_mb, ram_total_mb = read_phone_memory()
+        temperature_c, temperature_source = read_phone_temperature()
 
         now_ts = time.time()
         rx_bytes, tx_bytes = read_phone_wifi_bytes()
@@ -3228,19 +3951,6 @@ def run_phone_agent(server_url, token="", interval=1.0):
         else:
             prev_rx, prev_tx, prev_time = None, None, None
 
-        if time.monotonic() >= next_speedtest_at:
-            speedtest_status = "Echter Telefon-Speedtest läuft ..."
-            speedtest_started_at = time.monotonic()
-            try:
-                speedtest_down, speedtest_up = run_phone_speedtest()
-                speedtest_status = "Echter Telefon-Speedtest live"
-                speedtest_at = time.strftime("%Y-%m-%d %H:%M:%S")
-            except (OSError, RuntimeError, ValueError):
-                speedtest_status = "Speedtest fehlgeschlagen · letzter Wert bleibt erhalten"
-            # Start-zu-Start sind es exakt 30 Sekunden, nicht 30 s plus
-            # die Dauer des vorherigen Tests.
-            next_speedtest_at = speedtest_started_at + SPEEDTEST_INTERVAL
-
         if cpu_value is None or ram_value is None:
             continue
 
@@ -3249,12 +3959,10 @@ def run_phone_agent(server_url, token="", interval=1.0):
             "ram": ram_value,
             "ram_used_mb": ram_used_mb,
             "ram_total_mb": ram_total_mb,
+            "temperature_c": temperature_c,
+            "temperature_source": temperature_source,
             "wifi_down_mbps": wifi_down_mbps,
             "wifi_up_mbps": wifi_up_mbps,
-            "speedtest_down_mbps": speedtest_down,
-            "speedtest_up_mbps": speedtest_up,
-            "speedtest_status": speedtest_status,
-            "speedtest_at": speedtest_at,
             "source": cpu_source,
         }).encode("utf-8")
         request = urllib.request.Request(
@@ -3273,6 +3981,99 @@ def run_phone_agent(server_url, token="", interval=1.0):
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             print(f"[WARNUNG] Telefon-Agent konnte nicht senden: {error}")
 
+
+def release_termux_wake_lock():
+    global TERMUX_WAKE_LOCK_ACTIVE
+    if not TERMUX_WAKE_LOCK_ACTIVE:
+        return
+    prefix = os.environ.get("PREFIX", "")
+    unlock_command = os.path.join(prefix, "bin", "termux-wake-unlock")
+    try:
+        subprocess.run(
+            [unlock_command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    TERMUX_WAKE_LOCK_ACTIVE = False
+
+
+def enable_termux_wake_lock():
+    """Keep Android's CPU awake while the server is running in Termux."""
+    global TERMUX_WAKE_LOCK_ACTIVE
+    prefix = os.environ.get("PREFIX", "")
+    if not prefix or "com.termux" not in prefix:
+        return
+
+    lock_command = os.path.join(prefix, "bin", "termux-wake-lock")
+    if not os.path.isfile(lock_command):
+        print("[INFO] Termux-Wake-Lock fehlt. Optional: pkg install termux-api")
+        return
+
+    try:
+        result = subprocess.run(
+            [lock_command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print("[INFO] Wake-Lock nicht verfügbar; Android-Energiesparen kann Termux pausieren.")
+        return
+
+    if result.returncode == 0:
+        TERMUX_WAKE_LOCK_ACTIVE = True
+        atexit.register(release_termux_wake_lock)
+        print("[*] Termux-Wake-Lock aktiv (CPU bleibt während des Serverlaufs wach).")
+    else:
+        print("[INFO] Wake-Lock konnte nicht aktiviert werden; Termux ggf. von Akkuoptimierung ausnehmen.")
+
+
+def run_server_forever():
+    """Restart the listener after recoverable server-level errors."""
+    retry_delay = 1
+    while True:
+        server = None
+        started_at = time.monotonic()
+        try:
+            server = ThreadingHTTPServer((BIND_HOST, PORT), SecurityHandler)
+            print(
+                f"[*] Server läuft auf http://{BIND_HOST}:{PORT} "
+                "(Live-Stats & begrenztes Threading aktiv)"
+            )
+            server.serve_forever(poll_interval=0.5)
+            print("[WARNUNG] Server-Loop wurde unerwartet beendet.")
+        except KeyboardInterrupt:
+            print("\n[*] Server wird beendet.")
+            break
+        except Exception as error:
+            print(
+                f"[SERVER-FEHLER] {type(error).__name__}: {str(error)[:140]}. "
+                f"Neustartversuch in {retry_delay} s."
+            )
+        finally:
+            if server is not None:
+                try:
+                    server.server_close()
+                except OSError:
+                    pass
+
+        if time.monotonic() - started_at >= 60:
+            retry_delay = 1
+        try:
+            time.sleep(retry_delay)
+        except KeyboardInterrupt:
+            print("\n[*] Server wird beendet.")
+            break
+        retry_delay = min(30, retry_delay * 2)
+
+    release_termux_wake_lock()
+
+
 if __name__ == "__main__":
     if "--agent" in sys.argv:
         try:
@@ -3285,11 +4086,6 @@ if __name__ == "__main__":
         run_phone_agent(agent_url, agent_token)
         sys.exit(0)
 
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), SecurityHandler)
-    print(f"[*] Server läuft auf Port {PORT} (Live-Stats & Threading aktiv)")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[*] Server wird beendet.")
-        sys.exit(0)
-
+    enable_termux_wake_lock()
+    ensure_embedded_media()
+    run_server_forever()
